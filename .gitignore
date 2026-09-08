@@ -1,0 +1,5 @@
+node_modules/
+regionfilter.zip
+web-ext-artifacts/
+.env
+.amo-upload-uuid

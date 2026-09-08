@@ -1,0 +1,15 @@
+<!-- Simplified art for 16/32px: the meridian turns to mush below ~40px. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <defs>
+    <mask id="cut">
+      <rect width="128" height="128" fill="#fff"/>
+      <path d="M30 98 98 30" stroke="#000" stroke-width="34" stroke-linecap="round"/>
+    </mask>
+  </defs>
+  <rect width="128" height="128" rx="26" fill="#171b21"/>
+  <g mask="url(#cut)" fill="none" stroke="#8ab4ff" stroke-width="11">
+    <circle cx="64" cy="64" r="41"/>
+    <path d="M23 64h82"/>
+  </g>
+  <path d="M33 95 95 33" stroke="#f7768e" stroke-width="15" stroke-linecap="round"/>
+</svg>

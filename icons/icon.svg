@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <defs>
+    <mask id="cut">
+      <rect width="128" height="128" fill="#fff"/>
+      <!-- a gap around the slash so the globe reads as cut, not overlaid -->
+      <path d="M34 94 94 34" stroke="#000" stroke-width="26" stroke-linecap="round"/>
+    </mask>
+  </defs>
+
+  <rect width="128" height="128" rx="28" fill="#171b21"/>
+
+  <g mask="url(#cut)" fill="none" stroke="#8ab4ff" stroke-width="7">
+    <circle cx="64" cy="64" r="36"/>
+    <path d="M28 64h72"/>
+    <ellipse cx="64" cy="64" rx="17" ry="36"/>
+  </g>
+
+  <path d="M36 92 92 36" stroke="#f7768e" stroke-width="11" stroke-linecap="round"/>
+</svg>

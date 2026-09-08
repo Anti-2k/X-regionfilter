@@ -1,0 +1,18 @@
+{
+  "name": "regionfilter-for-x",
+  "version": "1.0.2",
+  "private": true,
+  "description": "Firefox extension that unlists tweets by author region",
+  "scripts": {
+    "test": "bun test",
+    "start": "web-ext run",
+    "lint": "web-ext lint",
+    "build": "web-ext build",
+    "sign": "web-ext sign",
+    "sign:nix": "nix-shell -p web-ext --run 'set -a; . ./.env; set +a; web-ext sign'"
+  },
+  "devDependencies": {
+    "happy-dom": "^20.14.0"
+  },
+  "license": "MIT"
+}
