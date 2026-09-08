@@ -166,7 +166,7 @@ On NixOS: `nix-shell -p web-ext`.
 
 ```sh
 bun install
-bun test              # 35 tests: taxonomy, matching, and the DOM engine
+bun test              # 41 tests: taxonomy, matching, the DOM engine, the settings page
 web-ext run           # live-reloading Firefox with the extension loaded
 web-ext lint --self-hosted
 web-ext build         # -> web-ext-artifacts/
@@ -174,7 +174,8 @@ web-ext build         # -> web-ext-artifacts/
 
 To sign a new version: bump `version` in `manifest.json`, put your AMO API
 credentials in `.env` (copy `.env.example`; it's gitignored), then
-`bun run sign:nix`.
+`bun run sign:nix`. Set `WEB_EXT_ENV_FILE` to read the credentials from
+somewhere else instead — a secrets manager, say.
 
 `LLMS.md` is the maintenance manual — architecture, contracts, how to add a
 region or a surface, and how to fix things when X changes its DOM.

@@ -15,7 +15,10 @@ as unlisted AMO releases, not through the public add-ons directory.
   mis-parses `.cjs` (`UsageError: "module.exports" must be camel case`). Verified.
 - **`bun run <script>` does not forward auto-loaded `.env` to subprocesses.**
   Verified. Use `bun --env-file=.env run <script>` or shell sourcing
-  (`set -a; . ./.env; set +a`), which is what `sign:nix` does.
+  (`set -a; . ./.env; set +a`), which is what `sign:nix` does. `sign:nix` reads
+  `$WEB_EXT_ENV_FILE` if set, so the credentials can live outside the project
+  (e.g. an agenix secret at `/run/agenix/amo-web-ext`) instead of in a plaintext
+  `.env`.
 - `.gitignore` covers `.env` (holds AMO signing credentials — never commit it),
   `node_modules/` and `web-ext-artifacts/`. Signed `.xpi` files are build output;
   publish them as GitHub releases rather than committing them.

@@ -9,7 +9,7 @@
     "lint": "web-ext lint",
     "build": "web-ext build",
     "sign": "web-ext sign",
-    "sign:nix": "nix-shell -p web-ext --run 'set -a; . ./.env; set +a; web-ext sign'"
+    "sign:nix": "nix-shell -p web-ext --run 'set -a; . \"${WEB_EXT_ENV_FILE:-./.env}\"; set +a; web-ext sign'"
   },
   "devDependencies": {
     "happy-dom": "^20.14.0"
