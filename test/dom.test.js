@@ -7,6 +7,14 @@ import fs from 'fs';
 const SRC = ['src/regions.js', 'src/settings.js', 'src/matcher.js', 'src/content.js']
   .map((f) => fs.readFileSync(f, 'utf8'));
 
+/* regions.js in this file's own scope, so tests can assert on what the
+ * content script extracted (its own TBR lives inside the vm context). */
+const REGIONS = (() => {
+  const ctx = vm.createContext({});
+  vm.runInContext(fs.readFileSync('src/regions.js', 'utf8'), ctx);
+  return ctx.TBR.regions;
+})();
+
 function deepMerge(a, b) {
   const out = structuredClone(a);
   for (const k of Object.keys(b || {})) {
@@ -302,4 +310,161 @@ test('an unknown author is asked about, then left alone', async () => {
   expect(asked.handles).toContain('mystery');
   expect(r.cell()).toBe('ok');
   r.close();
+});
+
+/* ------------------------------------------- "About this account" panel ---
+ *
+ * X renders each row's label and value in SEPARATE elements, so textContent
+ * concatenates them with no separator at all:
+ *
+ *   "Date joinedSeptember 2022Account based inUnited StatesVerifiedSince…"
+ *
+ * Any regex with a bounded character class over that string runs straight past
+ * the value and into the following rows. That shipped once and cached garbage
+ * for a fortnight. These tests exist to catch that whole class of bug: every
+ * one asserts the extracted string is the value EXACTLY, and the invariant
+ * test below asserts it still maps to a real country rather than a label:.   */
+
+const aboutPanel = (rows, pretty) => {
+  const cell = (t) => `<div><span>${t}</span></div>`;
+  const row = ([k, v]) => `<div>${cell(k)}${cell(v)}</div>`;
+  return pretty
+    ? `<div role="dialog">\n  ${rows.map(row).join('\n  ')}\n</div>`
+    : `<div role="dialog">${rows.map(row).join('')}</div>`;
+};
+
+/* The exact panel X shows for @25YearsAgoLive. */
+const REAL_PANEL = [
+  ['Date joined', 'September 2022'],
+  ['Account based in', 'United States'],
+  ['Verified', 'Since April 2024'],
+  ['Last on', 'September 2022'],
+  ['Connected via', 'United States App Store']
+];
+
+async function aboutPut(rows, opts = {}) {
+  const r = await run({
+    url: 'https://x.com/' + (opts.handle || 'someone'),
+    settings: { sources: { dom: true, appStore: opts.appStore !== false } },
+    html: aboutPanel(rows, opts.pretty)
+  });
+  const put = r.sent.find((m) => m.type === 'put');
+  r.close();
+  return put ? put.items[0] : null;
+}
+
+test('reads the disclosed country out of the real panel', async () => {
+  expect(await aboutPut(REAL_PANEL, { handle: '25yearsagolive' })).toMatchObject({
+    handle: '25yearsagolive', raw: 'United States', kind: 'country', source: 'dom-about'
+  });
+});
+
+test('markup whitespace does not change what is read', async () => {
+  const tight = await aboutPut(REAL_PANEL);
+  const pretty = await aboutPut(REAL_PANEL, { pretty: true });
+  expect(pretty.raw).toBe('United States');
+  expect(pretty.raw).toBe(tight.raw);
+});
+
+/* The value must never absorb the row that follows it, whatever that row is. */
+const NEXT_ROWS = [
+  ['Verified', 'Since April 2024'],
+  ['Connected via', 'United States App Store'],
+  ['Last on', 'September 2022'],
+  ['Also known as', 'Germany'],                 // a country name in the next row
+  ['Note', 'x'.repeat(200)],                    // long enough to blow any {2,60}
+  ['', 'United Kingdom']                        // value-only row, no label
+];
+
+for (const next of NEXT_ROWS) {
+  test(`value is exact when followed by ${JSON.stringify(next[0] || next[1].slice(0, 12))}`, async () => {
+    const got = await aboutPut([
+      ['Date joined', 'September 2022'],
+      ['Account based in', 'United States'],
+      next
+    ]);
+    expect(got.raw).toBe('United States');
+  });
+}
+
+/* The structural invariant: whatever we pull out of the panel has to survive
+ * parseLocation as a real place. A label: target means we grabbed junk. */
+const PANEL_COUNTRIES = ['United States', 'India', 'Germany', 'United Kingdom',
+  'Japan', 'Brazil', 'South Africa', 'United Arab Emirates'];
+
+for (const country of PANEL_COUNTRIES) {
+  test(`"${country}" from the panel maps to a real country, not a label:`, async () => {
+    const got = await aboutPut([
+      ['Date joined', 'September 2022'],
+      ['Account based in', country],
+      ['Verified', 'Since April 2024'],
+      ['Connected via', 'Ireland App Store']
+    ]);
+    expect(got.raw).toBe(country);
+    const target = REGIONS.parseLocation(got.raw);
+    expect(target).not.toMatch(/^label:/);
+    expect(target).toMatch(/^[A-Z]{2}$/);
+    expect(got.kind).toBe('country');
+  });
+}
+
+test('a disclosed region is recorded as a region, not a country', async () => {
+  const got = await aboutPut([['Account based in', 'Southeast Asia']]);
+  expect(got).toMatchObject({ raw: 'Southeast Asia', kind: 'region', source: 'dom-about' });
+});
+
+test('an inline "Based in: X" row still works', async () => {
+  const r = await run({
+    url: 'https://x.com/someone',
+    settings: { sources: { dom: true } },
+    html: '<div role="dialog"><div><span>Based in: United States</span></div></div>'
+  });
+  expect(r.sent.find((m) => m.type === 'put').items[0].raw).toBe('United States');
+  r.close();
+});
+
+test('a panel with no location row reports nothing', async () => {
+  expect(await aboutPut([['Date joined', 'September 2022'], ['Verified', 'Since April 2024']]))
+    .toBeNull();
+});
+
+/* ----------------------------------------- "Connected via" App Store fallback */
+
+test('falls back to the App Store country when none is disclosed', async () => {
+  expect(await aboutPut([
+    ['Date joined', 'September 2022'],
+    ['Verified', 'Since April 2024'],
+    ['Connected via', 'United States App Store']
+  ])).toMatchObject({ raw: 'United States', kind: 'country', source: 'dom-appstore' });
+});
+
+for (const suffix of ['App Store', 'Play Store', 'Google Play']) {
+  test(`strips the "${suffix}" suffix`, async () => {
+    const got = await aboutPut([['Connected via', `Japan ${suffix}`]]);
+    expect(got.raw).toBe('Japan');
+    expect(got.source).toBe('dom-appstore');
+  });
+}
+
+test('a disclosed country always wins over the App Store row', async () => {
+  const got = await aboutPut(REAL_PANEL);
+  expect(got.source).toBe('dom-about');
+  expect(got.raw).toBe('United States');
+});
+
+test('the disclosed country wins even when App Store disagrees', async () => {
+  const got = await aboutPut([
+    ['Account based in', 'India'],
+    ['Connected via', 'United States App Store']
+  ]);
+  expect(got).toMatchObject({ raw: 'India', source: 'dom-about' });
+});
+
+test('the App Store fallback can be switched off', async () => {
+  expect(await aboutPut([['Connected via', 'United States App Store']], { appStore: false }))
+    .toBeNull();
+});
+
+test('"Connected via" without a store suffix is ignored', async () => {
+  expect(await aboutPut([['Connected via', 'the web app']])).toBeNull();
 });

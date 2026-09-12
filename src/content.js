@@ -400,7 +400,73 @@
   /* ------------------------------------------- "About this account" scraper */
 
   var aboutSeen = new WeakSet();
-  var ABOUT_RE = /\b(?:based in|account based in)\s*[:\-]?\s*([^\n·|]{2,60})/i;
+
+  /* The panel is a list of label/value pairs, each in its own element:
+   *
+   *     Account based in
+   *     United States
+   *
+   * textContent flattens that to "...Account based inUnited StatesVerified..."
+   * with no separator, so a regex over it runs past the value and into the next
+   * row. Read the text nodes instead and take the one after the label. */
+  var ABOUT_LABEL = /^(?:account\s+)?based\s+in\s*[:\-]?$/i;
+  var ABOUT_INLINE = /\b(?:account\s+)?based\s+in\s*[:\-]?\s*(.{2,60})$/i;
+
+  /* Fallback only. "Connected via" reports the app-store country, which is a
+   * proxy for residence, not a disclosure of it: it survives travel, VPNs and
+   * store-region switches. background.rankOf() pins it to 35 so any real
+   * "Account based in" (85) or passive API sighting (60) displaces it. */
+  var VIA_LABEL = /^connected\s+via\s*[:\-]?$/i;
+  var VIA_INLINE = /\bconnected\s+via\s*[:\-]?\s*(.{2,60})$/i;
+  var STORE_SUFFIX = /^(.+?)\s+(?:app\s+store|play\s+store|google\s+play|store)$/i;
+
+  function textNodesIn(root) {
+    var out = [];
+    var w = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null);
+    var n;
+    while ((n = w.nextNode())) {
+      var t = (n.nodeValue || '').replace(/\s+/g, ' ').trim();
+      if (t) out.push(t);
+    }
+    return out;
+  }
+
+  /* "United States" is a country, "Southeast Asia" is not. Rank accordingly:
+   * background.rankOf() gives country 60 and region 50. */
+  function aboutKind(raw) {
+    var target = R.parseLocation(raw);
+    return target && /^[A-Z]{2}$/.test(target) ? 'country' : 'region';
+  }
+
+  /* Value for a label/value row: the label's own text node if the value is
+   * inline, else the next non-empty text node. Never spans into a later row. */
+  function rowValue(texts, i, labelRe, inlineRe) {
+    if (labelRe.test(texts[i])) {
+      for (var j = i + 1; j < texts.length; j++) {
+        if (texts[j].length >= 2) return texts[j];
+      }
+      return null;
+    }
+    var m = inlineRe.exec(texts[i]);
+    return m ? m[1].trim() : null;
+  }
+
+  function aboutLocationIn(root) {
+    var texts = textNodesIn(root);
+    var via = null;
+    for (var i = 0; i < texts.length; i++) {
+      var based = rowValue(texts, i, ABOUT_LABEL, ABOUT_INLINE);
+      if (based) return { raw: based, source: 'dom-about' };
+      if (!via) {
+        var v = rowValue(texts, i, VIA_LABEL, VIA_INLINE);
+        if (v) {
+          var m = STORE_SUFFIX.exec(v);
+          if (m) via = { raw: m[1].trim(), source: 'dom-appstore' };
+        }
+      }
+    }
+    return via;
+  }
 
   function scrapeAboutPanel() {
     if (!settings.sources.dom) return;
@@ -409,8 +475,9 @@
       var p = panels[i];
       if (aboutSeen.has(p)) continue;
       var txt = p.textContent || '';
-      var m = ABOUT_RE.exec(txt);
-      if (!m) continue;
+      var found = aboutLocationIn(p);
+      if (!found) continue;
+      if (found.source === 'dom-appstore' && !settings.sources.appStore) continue;
       aboutSeen.add(p);
 
       var handle = null;
@@ -424,7 +491,10 @@
 
       api.runtime.sendMessage({
         type: 'put',
-        items: [{ handle: handle, raw: m[1].trim(), kind: 'region', source: 'dom-about' }]
+        items: [{
+          handle: handle, raw: found.raw,
+          kind: aboutKind(found.raw), source: found.source
+        }]
       }).catch(function () { /* */ });
     }
   }

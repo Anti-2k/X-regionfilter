@@ -106,7 +106,7 @@ panel, and settings export/import.
 
 X never puts an author's country in the page itself. It only exists inside X's own
 API traffic and in the **About this account** panel. So the extension picks it up
-four ways:
+five ways:
 
 1. **Watching X's own traffic** as you scroll. Free, no extra requests, and it
    fills in quickly just from normal browsing. On by default.
@@ -115,7 +115,11 @@ four ways:
    in the session — visiting any profile is usually enough.
 3. **Reading the About panel** whenever you open one. The most reliable of the
    four.
-4. **The account's self-written profile location.** Off by default: it's free text
+4. **The "Connected via … App Store" row** of that same panel, used only when no
+   country is disclosed. It's where the account's app store is registered, which
+   is a decent hint and a poor fact — it survives travel, VPNs and store-region
+   switches — so anything better overrides it. On by default.
+5. **The account's self-written profile location.** Off by default: it's free text
    anyone can put anything in.
 
 Everything found gets cached for two weeks and shared across tabs, so the same
@@ -166,7 +170,7 @@ On NixOS: `nix-shell -p web-ext`.
 
 ```sh
 bun install
-bun test              # 41 tests: taxonomy, matching, the DOM engine, the settings page
+bun test              # 80 tests: taxonomy, matching, the DOM engine, the cache, the settings page
 web-ext run           # live-reloading Firefox with the extension loaded
 web-ext lint --self-hosted
 web-ext build         # -> web-ext-artifacts/

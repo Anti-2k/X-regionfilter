@@ -55,6 +55,7 @@ var TBR = globalThis.TBR || (globalThis.TBR = {});
       passive: true,         // read locations out of X's own API traffic
       active: true,          // ask X's API for an author we have not seen
       dom: true,             // scrape the "About this account" panel when open
+      appStore: true,        // ...and fall back to its "Connected via <X> App Store" row
       selfReported: false    // fall back to the free-text profile location field
     },
 

@@ -217,10 +217,26 @@
     });
   }
 
-  var ABOUT_OPS = [
+  /* Ops whose response carries the disclosed country. X renames these, so the
+   * list is discovered from the templates we actually learned rather than
+   * guessed: anything about-shaped, known names first. */
+  var ABOUT_OP_RE = /about|accountinfo|countryof|profilemodule/i;
+  var ABOUT_OPS_KNOWN = [
     'AboutThisProfile', 'UserAboutProfile', 'ProfileAbout', 'AboutThisAccount',
     'UserAboutTimeline', 'UserAccountInfo', 'ProfileAboutModule'
   ];
+
+  function aboutOps() {
+    var seen = Object.create(null);
+    var out = [];
+    ABOUT_OPS_KNOWN.forEach(function (op) {
+      if (templates[op]) { seen[op] = true; out.push(op); }
+    });
+    Object.keys(templates).forEach(function (op) {
+      if (!seen[op] && ABOUT_OP_RE.test(op)) out.push(op);
+    });
+    return out;
+  }
 
   function lookup(handle) {
     if (!config.active || pending[handle]) return;
@@ -232,7 +248,7 @@
 
     var chain = Promise.resolve(0);
 
-    ABOUT_OPS.forEach(function (op) {
+    aboutOps().forEach(function (op) {
       chain = chain.then(function (hits) {
         if (hits || !templates[op]) return hits;
         return replay(op, function (v) {

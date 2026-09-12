@@ -233,6 +233,7 @@
     ['passive', 'Read locations out of X’s own API traffic as you browse (free, no extra requests)'],
     ['active', 'Ask X’s API about authors we have not seen yet (needs X to have made the same kind of request once, so the shape can be replayed)'],
     ['dom', 'Read the “About this account” panel whenever you open one'],
+    ['appStore', 'In that panel, fall back to “Connected via … App Store” when no country is disclosed (a proxy for where someone is — survives travel, VPNs and store-region switches — so it is outranked by every real sighting)'],
     ['selfReported', 'Fall back to the account’s self-written profile location (unverified, easily faked)']
   ];
 

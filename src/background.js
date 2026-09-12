@@ -18,6 +18,9 @@
   function rankOf(kind, source) {
     var base = kind === 'country' ? 60 : kind === 'region' ? 50 : kind === 'self' ? 10 : 20;
     if (source === 'override') return 1000;
+    // App-store country is a proxy for residence, not a disclosure of it.
+    // Fixed low so any real sighting displaces it, but above self-reported.
+    if (source === 'dom-appstore') return 35;
     if (source === 'dom-about') base += 25;
     else if (/^api-about|^api-userabout|^api-profileabout/.test(source)) base += 20;
     return base;
@@ -57,6 +60,13 @@
       if (!target) return;
 
       var rank = rankOf(it.kind, it.source);
+      // A string we could not map to a place is weak evidence however
+      // authoritative its source looked, so it must never sit above a
+      // recognised place. Without this a bad scrape squats on the handle for
+      // the whole TTL and blocks every later clean sighting.
+      if (it.source !== 'override' && target.indexOf('label:') === 0) {
+        rank = Math.min(rank, 30);
+      }
       var old = cache[handle];
       if (old && old.rank > rank && fresh(old, settings.cacheTtlHours * 3600e3)) return;
       if (old && old.rank === rank && old.target === target) { old.ts = Date.now(); return; }

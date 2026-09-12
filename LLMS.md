@@ -128,6 +128,17 @@ sighting overwrites an old one: country 60 / region 50 / self 10, `+25` for
 `dom-about`, `+20` for an about-style API op, `1000` for a user override. `self`
 records are dropped entirely unless `sources.selfReported` is on.
 
+Two fixed ranks sit outside that scheme, both deliberately low:
+
+- `dom-appstore` (the panel's "Connected via … App Store" row) is pinned to **35**.
+  It is a proxy for residence, not a disclosure of it — it survives travel, VPNs
+  and store-region switches — so every real sighting displaces it, but it still
+  beats self-reported free text.
+- **Any target that parsed to `label:` is capped at 30**, whatever its source
+  said, unless it came from an override. An unmappable string is weak evidence,
+  and without the cap one bad scrape squats on a handle for the whole TTL and
+  blocks every later clean sighting. Overrides are exempt: the user picked it.
+
 ### Messages
 
 - content → background: `get`, `put`, `badge`, `cacheStats`, `cacheDump`,
@@ -199,6 +210,16 @@ likely they are to break:
 | account row | `[data-testid="UserCell"]` |
 | focused tweet | *absence* of `a[href*="/status/"] time` in the article |
 
+The **"About this account" panel** is read structurally, not by regex over
+`textContent`. Its rows are label/value pairs in separate elements and
+`textContent` concatenates them with **no separator**, so
+`"Account based in"` + `"United States"` + `"Verified"` flattens to
+`"Account based inUnited StatesVerified…"`. A regex with a bounded character
+class runs straight past the value into the next row and caches an unmappable
+`label:` target at rank 75, which then outranks correct passive sightings for
+the whole TTL. `aboutLocationIn()` walks text nodes and takes the one after the
+label instead. If you ever reach for `panel.textContent` here, don't.
+
 That last one is the subtlest: on a status page every reply's timestamp is a link
 containing `<time>`, and the tweet you opened is the one where it isn't. If focus
 detection breaks, opened tweets start disappearing — check this first.
@@ -215,7 +236,7 @@ passing against markup that no longer exists.
 ## Testing
 
 ```sh
-bun test          # 35 tests, ~4s
+bun test          # 80 tests, ~9s
 ```
 
 - `test/regions.test.js` — parsing, containment, ambiguity, plus invariants over
@@ -225,6 +246,9 @@ bun test          # 35 tests, ~4s
   in happy-dom and asserts what gets hidden.
 - `test/options.test.js` — runs the **real** settings page against the actual
   `options.html` body, and asserts the tree does not collapse when you tick a box.
+- `test/background.test.js` — drives the **real** cache through its message
+  listener and pins the source-ranking rules: what displaces what, and what a
+  junk scrape is allowed to do.
 
 The DOM harness has two non-obvious pieces, both required:
 
