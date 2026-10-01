@@ -1,7 +1,12 @@
-/* Shared location cache + message hub.
+/* Location cache and lookup budget, shared by every x.com tab.
  *
- * Lives here rather than in the content script so that a lookup done in one
- * tab immediately benefits every other tab, and survives navigation.
+ * X allows 50 About lookups per 15 minutes per account, across all tabs and
+ * including the ones X makes itself when you open an About page. Tabs ask here
+ * for a lease before looking anyone up, and report every response's
+ * x-rate-limit-* headers back, so the budget below tracks X's own count.
+ *
+ * Firefox may unload this event page when idle. Everything that matters is
+ * reloaded from storage on the next message.
  */
 (function () {
   'use strict';
@@ -9,172 +14,210 @@
   var api = TBR.api;
   var R = TBR.regions;
 
-  var cache = Object.create(null);   // handle -> {target, raw, kind, source, ts, rank}
-  var loaded = false;
-  var dirty = false;
-  var saveTimer = null;
-  var badges = Object.create(null);
+  var DAY = 86400e3;
+  var CACHE_TTL = 30 * DAY;    // a disclosed "based in" rarely changes
+  var NONE_TTL = 7 * DAY;      // nothing disclosed (or only a store country)
+  var MISSING_TTL = 1 * DAY;   // no such account (renamed, suspended)
+  var INFLIGHT_MS = 20000;
+  var UNKNOWN_BURST = 3;       // lookups to allow before X has told us the real budget
+  var RESERVE = 5;             // left untouched per window, for your own About-page visits
 
-  function rankOf(kind, source) {
-    var base = kind === 'country' ? 60 : kind === 'region' ? 50 : kind === 'self' ? 10 : 20;
-    if (source === 'override') return 1000;
-    // App-store country is a proxy for residence, not a disclosure of it.
-    // Fixed low so any real sighting displaces it, but above self-reported.
-    if (source === 'dom-appstore') return 35;
-    if (source === 'dom-about') base += 25;
-    else if (/^api-about|^api-userabout|^api-profileabout/.test(source)) base += 20;
-    return base;
-  }
+  var state = null;            // {cache, limit, queryId, seen}
+  var inflight = Object.create(null);   // handle -> ts
+  var saveTimer = null;
 
   function load() {
-    if (loaded) return Promise.resolve();
-    return api.storage.local.get('cache').then(function (res) {
-      cache = (res && res.cache) || Object.create(null);
-      loaded = true;
+    if (state) return Promise.resolve(state);
+    return api.storage.local.get(['locations', 'limit', 'queryId', 'seen']).then(function (r) {
+      state = state || {
+        cache: r.locations || {},
+        limit: r.limit || null,          // {remaining, limit, reset(ms)}
+        queryId: r.queryId || null,
+        seen: r.seen || {}               // raw "based in" string -> count, for the options page
+      };
+      return state;
     });
   }
 
-  function scheduleSave() {
-    dirty = true;
+  function persist() {
     if (saveTimer) return;
     saveTimer = setTimeout(function () {
       saveTimer = null;
-      if (!dirty) return;
-      dirty = false;
-      api.storage.local.set({ cache: cache });
-    }, 2000);
+      api.storage.local.set({ locations: state.cache, limit: state.limit, queryId: state.queryId, seen: state.seen });
+    }, 1000);
   }
 
-  function fresh(rec, ttlMs) {
-    return rec && (Date.now() - rec.ts) < ttlMs;
+  /* ----------------------------------------------------------------- cache */
+
+  // Cached as raw facts {basedIn, store, accurate, missing, ts}, so flipping a
+  // source toggle takes effect at once without looking anyone up again.
+  function ttlOf(rec) {
+    if (rec.missing) return MISSING_TTL;
+    if (!rec.basedIn) return NONE_TTL;
+    return CACHE_TTL;
   }
 
-  function put(items, settings) {
-    var changed = {};
-    items.forEach(function (it) {
-      var handle = String(it.handle || '').toLowerCase();
-      if (!handle) return;
-      if (it.kind === 'self' && !settings.sources.selfReported) return;
+  function fresh(rec) {
+    return !!rec && Date.now() - rec.ts < ttlOf(rec);
+  }
 
-      var target = R.parseLocation(it.raw);
-      if (!target) return;
+  function recordFrom(info) {
+    if (!info.found) return { missing: true, ts: Date.now() };
+    return { basedIn: info.basedIn || null, store: info.store || null, accurate: info.accurate !== false, ts: Date.now() };
+  }
 
-      var rank = rankOf(it.kind, it.source);
-      // A string we could not map to a place is weak evidence however
-      // authoritative its source looked, so it must never sit above a
-      // recognised place. Without this a bad scrape squats on the handle for
-      // the whole TTL and blocks every later clean sighting.
-      if (it.source !== 'override' && target.indexOf('label:') === 0) {
-        rank = Math.min(rank, 30);
+  // Raw facts -> what the matcher sees, under the current source toggles.
+  function view(rec, settings) {
+    if (!rec) return null;
+    if (rec.missing) return { target: null, raw: '', kind: 'missing' };
+    var src = settings.sources;
+    if (src.basedIn && rec.basedIn) {
+      var t = R.parseLocation(rec.basedIn);
+      if (t && t !== 'unavailable') {
+        return { target: t, raw: rec.basedIn, kind: /^[A-Z]{2}$/.test(t) ? 'country' : 'region', accurate: rec.accurate };
       }
-      var old = cache[handle];
-      if (old && old.rank > rank && fresh(old, settings.cacheTtlHours * 3600e3)) return;
-      if (old && old.rank === rank && old.target === target) { old.ts = Date.now(); return; }
-
-      var rec = {
-        target: target, raw: String(it.raw), kind: it.kind,
-        source: it.source, field: it.field || '', ts: Date.now(), rank: rank
-      };
-      cache[handle] = rec;
-      changed[handle] = rec;
-    });
-    if (Object.keys(changed).length) {
-      scheduleSave();
-      broadcast({ type: 'updated', items: changed });
     }
-    return changed;
+    if (src.connectedVia && rec.store) {
+      var s = R.parseLocation(rec.store);
+      if (s && /^[A-Z]{2}$/.test(s)) return { target: s, raw: rec.store, kind: 'appstore', accurate: rec.accurate };
+    }
+    return { target: 'unavailable', raw: '', kind: 'none' };
   }
+
+  /* ---------------------------------------------------------------- budget */
+
+  function tidy(now) {
+    Object.keys(inflight).forEach(function (h) {
+      if (now - inflight[h] > INFLIGHT_MS) delete inflight[h];
+    });
+    if (state.limit && now >= state.limit.reset) state.limit = null;
+  }
+
+  function budget() {
+    var now = Date.now();
+    tidy(now);
+    var busy = Object.keys(inflight).length;
+    if (!state.limit) return { left: UNKNOWN_BURST - busy, until: 0 };
+    var left = state.limit.remaining - RESERVE - busy;
+    return { left: left, until: left > 0 ? 0 : state.limit.reset };
+  }
+
+  function noteLimit(limit) {
+    if (!limit || !(limit.reset > 0)) return;
+    // Responses can arrive out of order; within one window the smaller
+    // remaining count is the newer one.
+    var cur = state.limit;
+    if (!cur || limit.reset > cur.reset || limit.remaining < cur.remaining) state.limit = limit;
+  }
+
+  function lease(handles) {
+    var b = budget();
+    var grant = [];
+    for (var i = 0; i < handles.length && grant.length < b.left; i++) {
+      var h = handles[i];
+      if (inflight[h] || fresh(state.cache[h])) continue;
+      inflight[h] = Date.now();
+      grant.push(h);
+    }
+    var after = budget();
+    return { grant: grant, until: after.left > 0 ? 0 : (after.until || Date.now() + 5000) };
+  }
+
+  /* -------------------------------------------------------------- messages */
 
   function broadcast(msg) {
-    api.tabs.query({ url: ['*://x.com/*', '*://twitter.com/*', '*://mobile.x.com/*', '*://mobile.twitter.com/*'] })
+    api.tabs.query({ url: ['*://x.com/*', '*://*.x.com/*', '*://twitter.com/*', '*://*.twitter.com/*'] })
       .then(function (tabs) {
-        tabs.forEach(function (t) {
-          api.tabs.sendMessage(t.id, msg).catch(function () { /* tab not ready */ });
-        });
-      }).catch(function () { /* */ });
+        tabs.forEach(function (t) { api.tabs.sendMessage(t.id, msg).catch(function () {}); });
+      }, function () {});
   }
 
-  function prune(ttlMs) {
-    var now = Date.now(), n = 0;
-    Object.keys(cache).forEach(function (h) {
-      if (cache[h].source !== 'override' && (now - cache[h].ts) > ttlMs) { delete cache[h]; n++; }
-    });
-    if (n) scheduleSave();
-    return n;
+  function result(msg, settings) {
+    var h = String(msg.handle || '').toLowerCase();
+    delete inflight[h];
+    noteLimit(msg.limit);
+    if (msg.error === 'rate') {
+      state.limit = { remaining: 0, limit: (msg.limit && msg.limit.limit) || 50,
+                      reset: (msg.limit && msg.limit.reset) || Date.now() + 15 * 60e3 };
+    }
+    var out = { budget: budget() };
+    if (msg.info && h) {
+      var rec = recordFrom(msg.info);
+      state.cache[h] = rec;
+      if (msg.info.basedIn) state.seen[msg.info.basedIn] = (state.seen[msg.info.basedIn] || 0) + 1;
+      var items = {};
+      items[h] = view(rec, settings);
+      broadcast({ type: 'updated', items: items });
+    }
+    persist();
+    return out;
   }
+
+  function prune() {
+    var n = 0;
+    Object.keys(state.cache).forEach(function (h) {
+      if (!fresh(state.cache[h])) { delete state.cache[h]; n++; }
+    });
+    if (n) persist();
+  }
+
+  var handlers = {
+    get: function (msg, s) {
+      var items = {};
+      (msg.handles || []).forEach(function (h) {
+        var rec = state.cache[h];
+        items[h] = fresh(rec) ? view(rec, s) : null;
+      });
+      return { items: items, budget: budget(), queryId: state.queryId };
+    },
+    lease: function (msg, s) { return lease(msg.handles || []); },
+    result: function (msg, s) { return result(msg, s); },
+    queryId: function (msg) {
+      state.queryId = msg.id;
+      persist();
+      return { ok: true };
+    },
+    stats: function (msg, s) {
+      var byKind = {};
+      Object.keys(state.cache).forEach(function (h) {
+        var r = state.cache[h];
+        var k = r.missing ? 'missing' : r.basedIn ? 'basedIn' : r.store ? 'storeOnly' : 'none';
+        byKind[k] = (byKind[k] || 0) + 1;
+      });
+      return { size: Object.keys(state.cache).length, byKind: byKind, budget: budget(),
+               limit: state.limit, queryId: state.queryId, seen: state.seen };
+    },
+    dump: function () { return { cache: state.cache }; },
+    clearCache: function () {
+      state.cache = {};
+      state.seen = {};
+      persist();
+      broadcast({ type: 'cleared' });
+      return { ok: true };
+    }
+  };
 
   api.runtime.onMessage.addListener(function (msg, sender) {
     if (!msg || !msg.type) return;
-
-    if (msg.type === 'get') {
-      return load().then(function () {
-        return TBR.settings.get().then(function (s) {
-          var ttl = s.cacheTtlHours * 3600e3;
-          var out = {};
-          (msg.handles || []).forEach(function (h) {
-            h = String(h).toLowerCase();
-            var rec = cache[h];
-            out[h] = fresh(rec, ttl) ? rec : null;
-          });
-          return { items: out };
-        });
-      });
-    }
-
-    if (msg.type === 'put') {
-      return load().then(function () {
-        return TBR.settings.get().then(function (s) {
-          return { changed: put(msg.items || [], s) };
-        });
-      });
-    }
-
     if (msg.type === 'badge') {
-      var tabId = sender.tab && sender.tab.id;
-      if (tabId != null) {
-        badges[tabId] = msg.count | 0;
-        api.action.setBadgeText({ tabId: tabId, text: msg.count ? String(msg.count) : '' });
-        api.action.setBadgeBackgroundColor({ tabId: tabId, color: '#f7768e' });
+      var tab = sender.tab && sender.tab.id;
+      if (tab != null) {
+        api.action.setBadgeText({ tabId: tab, text: msg.count ? String(msg.count) : '' });
+        api.action.setBadgeBackgroundColor({ tabId: tab, color: '#c2410c' });
       }
       return;
     }
-
-    if (msg.type === 'cacheStats') {
-      return load().then(function () {
-        var byTarget = {};
-        Object.keys(cache).forEach(function (h) {
-          var t = cache[h].target;
-          byTarget[t] = (byTarget[t] || 0) + 1;
-        });
-        return { size: Object.keys(cache).length, byTarget: byTarget };
-      });
-    }
-
-    if (msg.type === 'cacheDump') {
-      return load().then(function () { return { cache: cache }; });
-    }
-
-    if (msg.type === 'clearCache') {
-      cache = Object.create(null);
-      return api.storage.local.set({ cache: cache }).then(function () { return { ok: true }; });
-    }
-
-    if (msg.type === 'forget') {
-      return load().then(function () {
-        (msg.handles || []).forEach(function (h) { delete cache[String(h).toLowerCase()]; });
-        scheduleSave();
-        return { ok: true };
-      });
-    }
+    var fn = handlers[msg.type];
+    if (!fn) return;
+    return Promise.all([load(), TBR.settings.get()]).then(function (v) { return fn(msg, v[1]); });
   });
 
-  api.tabs.onRemoved.addListener(function (id) { delete badges[id]; });
-
+  // 1.x kept an incompatible cache and a diagnostics blob under these keys.
   api.runtime.onInstalled.addListener(function () {
-    load().then(function () {
-      return TBR.settings.get();
-    }).then(function (s) { prune(s.cacheTtlHours * 3600e3); });
+    api.storage.local.remove(['cache', 'diag']);
   });
 
-  load();
+  api.runtime.onStartup.addListener(function () {
+    load().then(prune);
+  });
 })();

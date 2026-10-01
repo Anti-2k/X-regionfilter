@@ -1,11 +1,8 @@
-/* Keeps the dev tooling and tests out of the packaged extension. */
+/* Keeps dev tooling and docs out of the packaged extension. */
 export default {
   ignoreFiles: [
     'node_modules',
-    'test',
     'package.json',
-    'bun.lock',
-    'bun.lockb',
     'web-ext-config.mjs',
     'web-ext-artifacts',
     '*.md',

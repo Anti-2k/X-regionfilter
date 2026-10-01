@@ -1,15 +1,14 @@
-/* Decide what to do with an author whose location X reported (or didn't).
+/* Decide what to do with one author, given what X says about them.
  *
- * Both sides of the comparison collapse to a set of ISO country codes:
+ * Both sides collapse to a set of ISO country codes:
  *
- *   blocked ⊇ author   ->  block   (every place the author could be is blocked)
- *   blocked ∩ author = ∅ -> allow
- *   partial overlap    ->  ambiguous
+ *   author ⊆ blocked      -> block
+ *   author ∩ blocked = ∅  -> allow
+ *   partial overlap       -> settings.unclear
  *
- * The third case is the one that matters here. X frequently reports only a
- * subregion ("Eastern Europe") with no country. If you blocked Russia, an
- * Eastern Europe author *might* be Russian and might be Polish — there is no
- * honest yes/no, so it is surfaced as its own policy knob rather than guessed.
+ * The third case is real: X often reports a region ("Eastern Europe") rather
+ * than a country. If you blocked Russia, an Eastern Europe account might be
+ * Russian and might be Polish. That is left to the user, never guessed.
  */
 var TBR = globalThis.TBR || (globalThis.TBR = {});
 
@@ -18,103 +17,59 @@ var TBR = globalThis.TBR || (globalThis.TBR = {});
 
   var R = TBR.regions;
 
-  var bcsKey = null, bcsVal = null;
-  function blockedCodeSet(blocked) {
-    var key = (blocked || []).join(",");
-    if (key === bcsKey) return bcsVal;
-    var set = new Set();
-    var labels = new Set();
-    (blocked || []).forEach(function (t) {
-      if (t.indexOf('label:') === 0) { labels.add(t); return; }
-      R.codesFor(t).forEach(function (c) { set.add(c); });
+  var memoKey = null, memo = null;
+  function blockedSet(blocked) {
+    var key = blocked.join(',');
+    if (key === memoKey) return memo;
+    var codes = new Set(), labels = new Set();
+    blocked.forEach(function (t) {
+      if (t.indexOf('label:') === 0) labels.add(t);
+      else R.codesFor(t).forEach(function (c) { codes.add(c); });
     });
-    bcsKey = key;
-    bcsVal = { codes: set, labels: labels };
-    return bcsVal;
+    memoKey = key;
+    memo = { codes: codes, labels: labels };
+    return memo;
   }
 
-  /* A location record as produced by the lookup layer:
-   *   { target: "DE" | "sub:europe/eastern" | "label:x" | "unavailable" | null,
-   *     raw: "Germany", source: "api-about" }                                */
-
-  function describe(rec) {
-    if (!rec || !rec.target) return 'unknown';
-    if (rec.target === 'unavailable') return 'not disclosed';
-    var l = R.labelFor(rec.target);
-    if (rec.target.indexOf('label:') === 0) return rec.raw || l;
-    return l;
+  function verdict(policy, why, label) {
+    return { action: policy === 'block' ? 'block' : policy === 'flag' ? 'flag' : 'allow', why: why, label: label };
   }
 
-  /**
-   * @returns {{action:'allow'|'block'|'flag', why:string, kind:string, label:string}}
-   */
+  /* rec: {target, raw, kind} as served by background.js view(), or null.
+   * kind: country | region | appstore | override | none | missing          */
   function evaluate(rec, settings) {
-    var pol = settings.policy || {};
-    var label = describe(rec);
+    var v = decide(rec, settings);
+    if (rec && rec.accurate === false && v.why) v.why += ' (X notes this may be inaccurate, e.g. a VPN)';
+    return v;
+  }
 
-    if (!rec || !rec.target) {
-      return decide(pol.unknown, 'unknown', 'author location not known yet', label);
+  function decide(rec, settings) {
+    if (!rec || !rec.target || rec.target === 'unavailable') {
+      return verdict(settings.unknown, rec ? 'X shows no location for this account' : 'location not looked up yet', '');
     }
-    if (rec.target === 'unavailable') {
-      return decide(pol.unknown, 'unknown', 'X does not disclose this account’s location', label);
-    }
 
-    var b = blockedCodeSet(settings.blocked);
+    var label = rec.target.indexOf('label:') === 0 ? rec.raw : R.labelFor(rec.target);
+    if (rec.kind === 'appstore') label += ' (App Store)';
+    var b = blockedSet(settings.blocked);
 
-    // An unmappable label can only be matched literally.
     if (rec.target.indexOf('label:') === 0) {
-      if (b.labels.has(rec.target)) {
-        return { action: 'block', why: 'location "' + label + '" is on your list', kind: 'label', label: label };
-      }
-      return decide(pol.unmapped, 'unmapped', 'location "' + label + '" is not a place we recognise', label);
+      if (b.labels.has(rec.target)) return { action: 'block', why: '“' + rec.raw + '” is on your list', label: label };
+      return verdict(settings.unclear, '“' + rec.raw + '” is not a place this extension recognises', label);
     }
 
     var mine = R.codesFor(rec.target);
-    if (!mine.length) {
-      return decide(pol.unmapped, 'unmapped', 'no countries known for "' + label + '"', label);
-    }
-
     var hits = 0;
     for (var i = 0; i < mine.length; i++) if (b.codes.has(mine[i])) hits++;
 
-    var isCountry = mine.length === 1 && rec.target === mine[0];
-
-    if (hits === mine.length) {
-      return {
-        action: 'block',
-        kind: isCountry ? 'country' : 'region',
-        label: label,
-        why: isCountry ? label + ' is on your list'
-                       : 'all of ' + label + ' is on your list'
-      };
+    if (mine.length && hits === mine.length) {
+      return { action: 'block', label: label,
+               why: (mine.length === 1 ? label : 'all of ' + label) + ' is on your list' };
     }
-    if (hits === 0) {
-      return { action: 'allow', kind: 'clear', label: label, why: label + ' is not on your list' };
-    }
+    if (hits === 0) return { action: 'allow', label: label, why: label + ' is not on your list' };
 
-    // Partial: X gave a region, some of it is blocked. Cannot resolve honestly.
-    return decide(
-      pol.ambiguous, 'ambiguous',
-      'X only says "' + label + '" — ' + hits + ' of ' + mine.length +
-      ' countries there are on your list, so this could go either way',
-      label
-    );
+    return verdict(settings.unclear,
+      'X only says “' + label + '”: ' + hits + ' of ' + mine.length + ' countries there are on your list', label);
   }
 
-  function decide(policy, kind, why, label) {
-    var action = policy === 'block' ? 'block' : policy === 'flag' ? 'flag' : 'allow';
-    return { action: action, kind: kind, why: why, label: label };
-  }
-
-  /** Handles that can never be resolved further are worth not re-fetching. */
-  function isTerminal(rec) {
-    return !!rec && (rec.target === 'unavailable' || rec.source === 'override');
-  }
-
-  TBR.matcher = {
-    evaluate: evaluate,
-    describe: describe,
-    blockedCodeSet: blockedCodeSet,
-    isTerminal: isTerminal
-  };
+  TBR.matcher = { evaluate: evaluate };
 })();

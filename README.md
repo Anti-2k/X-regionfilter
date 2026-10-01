@@ -31,173 +31,125 @@ Needs Firefox 140 or newer (Firefox for Android 142+).
 
 ## Setting it up
 
-Click the toolbar icon → **Settings…**. Five tabs.
+Click the toolbar icon → **Settings**. It's one page, with a short hint under
+every option.
 
-### Places
+**Places to hide.** Search, or expand a continent and tick things. Ticking a
+region covers every country in it; those countries then show greyed out with
+"via …". **Groups** has the blocs X tends to use: European Union, Middle East,
+Nordics, Gulf states and so on.
 
-The list of countries and regions you don't want to see. Search, or expand a
-continent and tick things.
+**Where locations come from.** Two switches, both on by default:
 
-You can tick at any level. Ticking **Eastern Europe** covers all ten countries in
-it; the individual countries then show up greyed out with a note saying what's
-covering them. There's also a **Groups** section at the top for the blocs X
-actually uses in practice — European Union, Middle East, Nordics, Sub-Saharan
-Africa, Gulf states and so on.
+- **Account based in**: the country or region X shows for the account. The
+  main signal.
+- **Connected via (App Store)**: the country of the app store the account
+  uses. Only used when there's no "based in". It doesn't change with travel or
+  VPNs, so it's a decent hint and a poor fact.
 
-Your current selections appear as removable chips at the top.
+Turn both off and no lookups happen at all; only your fixed locations apply.
 
-### Where it applies
+**Where to filter.** Feeds, replies, quoted posts, reposts and people lists are
+on. **Their own profile** and **The post you opened** are off: if you went
+somewhere on purpose, you see it.
 
-Twelve switches for the twelve places a tweet can appear. Most are on. Three
-worth knowing about:
+**When it isn't clear.** X sometimes gives only a region. If you hid Russia
+and X says "Eastern Europe", the account might be Russian or Polish, and
+nothing in the data says which. So you choose: **Show** (default), **Show,
+marked** (a dashed outline, handy for seeing how often it comes up), or
+**Hide**. The same choice exists for accounts with **no location**: X shows
+nothing, or they haven't been looked up yet.
 
-- **Quote embeds** — when a blocked author is quoted inside someone else's tweet,
-  the default hides just the quote box and leaves the tweet around it. Flip
-  *"…and hide the whole quoting tweet"* if you'd rather lose the lot.
-- **Reposts** — two separate switches. One for reposts *of* someone in a blocked
-  region, one for anything reposted *by* an account in one.
-- **Their own profile** and **the tweet you opened by link** are **off** by
-  default. If you deliberately navigated somewhere, you get to see it. Turn them
-  on if you want the filter to apply even then.
+**Looks.** Remove hidden posts entirely (default) or leave a one-line
+**placeholder** with a Show button that names the place. Try the placeholder
+for a few days to see what you're actually filtering.
 
-This tab also controls what a hidden entry looks like: gone entirely (default), or
-collapsed to a one-line placeholder with a **Show** button that names the region.
-The placeholder is worth trying for a few days — it shows you what you're
-actually filtering out before you commit to the silent version.
+**Accounts.** **Never hide** wins over everything. **Fixed locations**
+(`@someone = Germany`) replace whatever X says.
 
-### Unclear locations
-
-**This is the tab that matters, and it's worth two minutes.**
-
-X often doesn't say what country someone is in. It says a *region* — "Eastern
-Europe", "the European Union", "Southeast Asia" — and nothing more specific. So
-"is this author in a place I blocked?" doesn't always have a yes or no answer:
-
-- You blocked **Eastern Europe**, X says **Russia** → hidden. Russia is in Eastern
-  Europe, no ambiguity.
-- You blocked **Russia**, X says **Western Europe** → shown. No overlap at all.
-- You blocked **Russia**, X says **Eastern Europe** → **nobody can tell.** That
-  account might be Russian. It might be Polish. The data doesn't say.
-
-That last case is a genuine coin flip, so the extension refuses to guess and asks
-you instead. Three options: **show it** (default, cautious), **hide it** (blunt —
-you'll lose Poles along with Russians), or **show it but mark it** with a dashed
-outline so you can see how often it's even coming up.
-
-Two more settings work the same way, for when X reports a place the extension has
-never heard of, and for when X discloses nothing at all. Both default to showing
-the post.
-
-### Per-account
-
-Two lists. **Never hide these accounts** wins over everything — put people you
-follow here. **Fixed locations** (`@someone = Germany`) overrides whatever X says
-about that account and never expires; useful when X has someone plainly wrong, or
-when you know better.
-
-### Advanced
-
-Where location data comes from (below), how long it's cached, a diagnostics
-panel, and settings export/import.
+**Status.** How many lookups are left, how many accounts are known, and every
+location X has reported so far with how it was read.
 
 ---
 
-## Why some posts take a second
+## How it finds locations, and why it's gradual
 
-X never puts an author's country in the page itself. It only exists inside X's own
-API traffic and in the **About this account** panel. So the extension picks it up
-five ways:
+X only shows where an account is based on its **About this account** page.
+The extension asks X for that page's data, one account at a time, with your own
+logged-in session, exactly as X's website does when you open an About page.
 
-1. **Watching X's own traffic** as you scroll. Free, no extra requests, and it
-   fills in quickly just from normal browsing. On by default.
-2. **Asking about accounts it hasn't seen**, by reusing a request X itself has
-   already made. This only works for request shapes X has performed at least once
-   in the session — visiting any profile is usually enough.
-3. **Reading the About panel** whenever you open one. The most reliable of the
-   four.
-4. **The "Connected via … App Store" row** of that same panel, used only when no
-   country is disclosed. It's where the account's app store is registered, which
-   is a decent hint and a poor fact — it survives travel, VPNs and store-region
-   switches — so anything better overrides it. On by default.
-5. **The account's self-written profile location.** Off by default: it's free text
-   anyone can put anything in.
+X allows **about 50 of those lookups every 15 minutes**. So:
 
-Everything found gets cached for two weeks and shared across tabs, so the same
-account is only ever looked up once.
+- Posts on screen are looked up first. Ones you've scrolled past aren't.
+- Every answer is cached for 30 days and shared across tabs, so each account
+  is only looked up once.
+- While a lookup is on its way, the post is held blank for up to 2.5 seconds
+  so it doesn't flash past before hiding.
+- When the 50 are used up, new authors show normally until X resets the count.
+  They get filtered once they've been looked up.
+- Opening someone's About page yourself also teaches the extension about them,
+  at no cost.
 
-While an author is still unresolved, their post is held blank for a moment
-(2.5 seconds by default) so something about to be hidden doesn't flash past first.
-If nothing resolves in time, your *"X discloses no location"* policy applies. This
-is why the first minute on a fresh profile is the slowest — after that, almost
-everything is a cache hit.
-
-**Diagnostics** in the Advanced tab shows what's working: how many responses have
-been scanned, how many locations were found, which request shapes it learned. If
-filtering seems inert, look there first.
+The first sessions on a fresh install are the patchiest. It fills in quickly.
 
 ---
 
 ## Troubleshooting
 
-**Nothing is being hidden.** Check Diagnostics. If *locations found* is 0, the
-extension hasn't learned anything about anyone yet — scroll a bit, or open one
-account's *About this account* panel to prime it. If it's non-zero but nothing
-hides, your blocklist probably doesn't overlap what X is reporting; switch
-*Unclear locations* to **show but mark** for a while to see what's actually coming
-through.
+**Nothing is being hidden.** Check the popup: are any places picked, and are
+there lookups left? Settings → Status → *Locations seen so far* shows what X
+has actually reported. If your list doesn't overlap any of it, nothing will
+hide.
 
-**Too much is being hidden.** Almost always the *Unclear locations* → **hide it**
-setting. A region that merely overlaps your list catches everyone else in that
-region too. Set it back to **show** or **mark**.
+**Too much is being hidden.** Usually *When it isn't clear* set to **Hide**.
+A region that only partly overlaps your list catches everyone else there too.
 
-**Someone I follow got hidden.** Add them to *Never hide these accounts*.
+**Someone I follow got hidden.** Add them to *Never hide*.
 
-**X changed its layout and everything broke.** Likely — X reshuffles its markup
-regularly. See `LLMS.md`, which documents exactly which selectors are load-bearing
-and how to repair them.
+**X changed something and it stopped working.** Likely; X reshuffles its site
+regularly. `AGENTS.md` lists every selector and API detail the extension relies
+on and how to repair them.
 
-**Is anything sent anywhere?** No. Settings and the location cache live in your
-browser's local extension storage. No servers, no analytics, no remote code. The
-only network requests it ever makes are to X itself, replaying a request X already
-made, and only when *Ask X's API* is on.
+**Is anything sent anywhere?** No. Settings and the cache live in your
+browser's extension storage. The only requests it makes are to X itself (the
+About lookups) and, if X renames that lookup, one fetch of X's own script
+from abs.twimg.com to find the new name.
 
 ---
 
 ## Working on it
 
-Needs [bun](https://bun.sh) and [web-ext](https://github.com/mozilla/web-ext).
-On NixOS: `nix-shell -p web-ext`.
+Needs [web-ext](https://github.com/mozilla/web-ext). On NixOS:
+`nix-shell -p web-ext`.
 
 ```sh
-bun install
-bun test              # 80 tests: taxonomy, matching, the DOM engine, the cache, the settings page
-web-ext run           # live-reloading Firefox with the extension loaded
+web-ext run           # Firefox with the extension loaded, reloads on change
 web-ext lint --self-hosted
 web-ext build         # -> web-ext-artifacts/
 ```
 
-To sign a new version: bump `version` in `manifest.json`, put your AMO API
-credentials in `.env` (copy `.env.example`; it's gitignored), then
-`bun run sign:nix`. Set `WEB_EXT_ENV_FILE` to read the credentials from
-somewhere else instead — a secrets manager, say.
+There are no automated tests; check changes in a logged-in Firefox. `AGENTS.md`
+has the checklist.
 
-`LLMS.md` is the maintenance manual — architecture, contracts, how to add a
-region or a surface, and how to fix things when X changes its DOM.
+To sign a new version: bump `version` in `manifest.json` and `package.json`,
+put your AMO API credentials in `.env` (it's gitignored), then
+`bun run sign:nix`. Set `WEB_EXT_ENV_FILE` to read the credentials from
+somewhere else instead.
 
 ## License
 
-MIT — see `LICENSE`.
+MIT, see `LICENSE`.
 
 ## Layout
 
 ```
 manifest.json
-src/regions.js     country/region taxonomy and location-string parsing
-src/matcher.js     the hide/show/mark decision
-src/settings.js    schema, defaults, storage
-src/inject.js      watches X's API traffic for author locations
-src/content.js     decides which entries to unlist, and unlists them
-src/background.js  shared location cache
+src/regions.js     country/region taxonomy and location parsing
+src/settings.js    settings schema and storage
+src/matcher.js     the hide / show / mark decision
+src/page.js        runs X's About lookups in the page (page world)
+src/content.js     finds posts, decides, hides them
+src/background.js  shared cache and lookup budget
+src/styles.css     how hidden, held and marked posts look
 ui/                settings page and toolbar popup
-test/              bun tests
 ```

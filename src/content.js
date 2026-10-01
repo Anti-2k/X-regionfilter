@@ -1,7 +1,14 @@
-/* DOM engine: decide which entries get unlisted, and unlist them.
+/* Decide which entries to unlist, and unlist them.
  *
- * Nothing here blocks anything. Entries are removed from lists only; the
- * account pages, the tweet permalinks and every direct link keep working.
+ * Nothing here blocks anything: entries are taken out of lists, while
+ * profiles, permalinks and direct links keep working.
+ *
+ * Per author: ask background for a cached location; on a miss, queue the
+ * handle and let pump() look it up through page.js when the shared budget
+ * allows, nearest-to-the-viewport first. While a lookup is genuinely on its
+ * way the entry is held blank for a moment (HOLD_MS) so something about to
+ * be hidden doesn't flash past; after that, or whenever the budget is spent,
+ * the "unknown" policy applies until an answer arrives.
  */
 (function () {
   'use strict';
@@ -10,165 +17,230 @@
   var R = TBR.regions;
   var M = TBR.matcher;
 
+  var HOLD_MS = 2500;
+  var MAX_INFLIGHT = 2;
+  var ASK_TIMEOUT_MS = 20000;
+
   var settings = TBR.settings.DEFAULTS;
-  var recs = new Map();          // handle -> rec | null  (null = looked up, nothing known)
-  var asked = new Set();         // handles we already asked the page to fetch
-  var wantBatch = new Set();
-  var batchTimer = null;
-  var counts = { hidden: 0, flagged: 0, pending: 0 };
-  var revealed = new Set();      // per-page manual reveals
+  var queryId = null;
 
-  /* ------------------------------------------------------------ page world */
+  var recs = new Map();       // handle -> view record, or null (looked up, unresolvable)
+  var firstSeen = new Map();  // handle -> when we first needed it
+  var getQueue = new Set();   // handles waiting for a cache read
+  var want = new Set();       // cache misses waiting for a lookup
+  var asking = new Map();     // handle -> ts, sent to page.js
+  var lastEl = new Map();     // handle -> an element showing it, for priority
+  var revealed = new Set();   // "Show" clicks, cleared on navigation
+  var limitedUntil = 0;       // no lookup budget until then
+  var getTimer = null, pumpTimer = null, leasing = false;
+  var counts = { hidden: 0, flagged: 0, pending: 0, unresolved: 0 };
 
-  function injectPageScript() {
-    try {
-      var s = document.createElement('script');
-      s.src = api.runtime.getURL('src/inject.js');
-      s.async = false;
-      (document.head || document.documentElement).appendChild(s);
-      s.addEventListener('load', function () { s.remove(); });
-    } catch (e) { /* */ }
-  }
-  injectPageScript();
+  /* ------------------------------------------------------------ page.js */
 
   function toPage(msg) {
-    msg.tbr = true;
-    msg.dir = 'toPage';
-    try { window.postMessage(msg, location.origin); } catch (e) { /* */ }
+    msg.tbr = 'content';
+    window.postMessage(msg, location.origin);
   }
 
-  var lastDiag = null;
-  window.addEventListener('message', function (ev) {
-    if (ev.source !== window) return;
-    var d = ev.data;
-    if (!d || d.tbr !== true || d.dir === 'toPage') return;
+  function send(msg) {
+    return api.runtime.sendMessage(msg).catch(function () { return null; });
+  }
 
+  window.addEventListener('message', function (ev) {
+    if (ev.source !== window || !ev.data || ev.data.tbr !== 'page') return;
+    var d = ev.data;
     if (d.type === 'ready') {
-      toPage({ type: 'config', sources: settings.sources, debug: settings.debug });
-    } else if (d.type === 'locations') {
-      api.runtime.sendMessage({ type: 'put', items: d.items }).catch(function () { /* */ });
-    } else if (d.type === 'lookupFailed') {
-      if (!recs.has(d.handle)) { recs.set(d.handle, null); schedule(); }
-    } else if (d.type === 'diag') {
-      lastDiag = d.diag;
-      api.storage.local.set({ diag: d.diag });
+      if (queryId) toPage({ type: 'queryId', id: queryId });
+    } else if (d.type === 'queryId') {
+      queryId = d.id;
+      send({ type: 'queryId', id: d.id });
+    } else if (d.type === 'result') {
+      onResult(d);
     }
   });
+
+  function onResult(d) {
+    var h = String(d.handle || '').toLowerCase();
+    asking.delete(h);
+    send({ type: 'result', handle: h, info: d.info, error: d.error, limit: d.limit }).then(function (r) {
+      if (r && r.budget) limitedUntil = r.budget.until || 0;
+      if (d.error === 'rate') want.add(h);
+      else if (d.error && !recs.has(h)) { recs.set(h, null); schedule(); }
+      pump();
+    });
+  }
+
+  /* -------------------------------------------------------- background */
 
   api.runtime.onMessage.addListener(function (msg) {
     if (!msg) return;
     if (msg.type === 'updated') {
-      Object.keys(msg.items).forEach(function (h) { recs.set(h, msg.items[h]); });
-      schedule(true);
-    } else if (msg.type === 'pageStats') {
-      return Promise.resolve({ counts: counts, diag: lastDiag });
-    } else if (msg.type === 'revealAll') {
-      document.querySelectorAll('[data-tbr="hidden"],[data-tbr="collapsed"]').forEach(function (el) {
-        var h = el.getAttribute('data-tbr-handle');
-        if (h) revealed.add(h);
+      Object.keys(msg.items).forEach(function (h) {
+        recs.set(h, msg.items[h]);
+        want.delete(h);
+        asking.delete(h);
       });
-      resetMarks();
-      schedule(true);
-      return Promise.resolve({ ok: true });
-    } else if (msg.type === 'rescan') {
-      recs.clear(); asked.clear(); resetMarks(); schedule(true);
+      schedule();
+    } else if (msg.type === 'cleared') {
+      recs.clear();
+      schedule();
+    } else if (msg.type === 'pageStats') {
+      return Promise.resolve({ counts: counts, limitedUntil: limitedUntil });
+    } else if (msg.type === 'revealAll') {
+      document.querySelectorAll('[data-tbr-handle]').forEach(function (el) {
+        revealed.add(el.getAttribute('data-tbr-handle'));
+      });
+      schedule();
       return Promise.resolve({ ok: true });
     }
   });
 
-  /* ------------------------------------------------------------- resolution */
+  /* ---------------------------------------------------------- resolution */
 
-  function need(handle) {
-    if (!handle || recs.has(handle)) return;
-    wantBatch.add(handle);
-    if (batchTimer) return;
-    batchTimer = setTimeout(flushBatch, 60);
+  function lookupsOn() { return TBR.settings.lookupsOn(settings); }
+
+  function need(h) {
+    if (recs.has(h) || getQueue.has(h) || want.has(h) || asking.has(h)) return;
+    if (!firstSeen.has(h)) firstSeen.set(h, Date.now());
+    getQueue.add(h);
+    if (!getTimer) getTimer = setTimeout(flushGet, 40);
   }
 
-  function flushBatch() {
-    batchTimer = null;
-    var handles = Array.from(wantBatch);
-    wantBatch.clear();
+  function flushGet() {
+    getTimer = null;
+    var handles = Array.from(getQueue);
     if (!handles.length) return;
-    api.runtime.sendMessage({ type: 'get', handles: handles }).then(function (res) {
-      var miss = [];
+    send({ type: 'get', handles: handles }).then(function (r) {
       handles.forEach(function (h) {
-        var rec = res && res.items ? res.items[h] : null;
+        getQueue.delete(h);
+        var rec = r && r.items ? r.items[h] : null;
         if (rec) recs.set(h, rec);
-        else miss.push(h);
-      });
-      miss.forEach(function (h) {
-        if (asked.has(h)) { if (!recs.has(h)) recs.set(h, null); return; }
-        asked.add(h);
-        if (settings.sources.active) toPage({ type: 'lookup', handle: h });
+        else if (lookupsOn()) want.add(h);
         else recs.set(h, null);
       });
-      schedule(true);
-    }).catch(function () { /* */ });
+      if (r && r.budget) limitedUntil = r.budget.until || 0;
+      if (r && r.queryId && r.queryId !== queryId) {
+        queryId = r.queryId;
+        toPage({ type: 'queryId', id: queryId });
+      }
+      schedule();
+      pump();
+    });
   }
 
-  function recFor(handle) {
-    if (!handle) return undefined;
-    var ov = settings.overrides[handle];
-    if (ov) return { target: ov, raw: R.labelFor(ov), kind: 'override', source: 'override' };
-    return recs.get(handle);
+  // Wanted handles, the ones on screen first, then below, then above. X only
+  // keeps entries near the viewport in the DOM, so an author whose entry is
+  // gone has been scrolled past: drop them rather than spend budget on them.
+  // They're queued again if they come back.
+  function prioritised() {
+    var vh = window.innerHeight;
+    var scored = [];
+    want.forEach(function (h) {
+      var el = lastEl.get(h);
+      if (!el || !el.isConnected) {
+        want.delete(h);
+        lastEl.delete(h);
+        firstSeen.delete(h);
+        return;
+      }
+      var top = el.getBoundingClientRect().top;
+      scored.push([top >= -200 && top < vh ? top : top >= vh ? vh + top : 2 * vh - top, h]);
+    });
+    scored.sort(function (a, b) { return a[0] - b[0]; });
+    return scored.map(function (s) { return s[1]; });
   }
 
-  /* ---------------------------------------------------------------- surface */
+  function pump() {
+    clearTimeout(pumpTimer);
+    if (leasing || !want.size || !lookupsOn() || !active()) return;
+    var now = Date.now();
+    asking.forEach(function (ts, h) {
+      if (now - ts > ASK_TIMEOUT_MS) { asking.delete(h); if (!recs.has(h)) recs.set(h, null); }
+    });
+    if (now < limitedUntil) {
+      pumpTimer = setTimeout(pump, limitedUntil - now + 1000);
+      return;
+    }
+    var room = MAX_INFLIGHT - asking.size;
+    if (room <= 0) return;
+    var order = prioritised().slice(0, room);
+    leasing = true;
+    send({ type: 'lease', handles: order }).then(function (r) {
+      leasing = false;
+      if (!r) return;
+      r.grant.forEach(function (h) {
+        want.delete(h);
+        asking.set(h, Date.now());
+        toPage({ type: 'lookup', handle: h });
+      });
+      // Not granted although budget remains: another tab has it in flight
+      // or already cached it. Its answer arrives as an 'updated' broadcast;
+      // re-read the cache in case it already did.
+      if (!r.until) {
+        order.forEach(function (h) {
+          if (r.grant.indexOf(h) === -1) { want.delete(h); need(h); }
+        });
+      }
+      limitedUntil = r.until || 0;
+      schedule();
+      pumpTimer = setTimeout(pump, limitedUntil ? limitedUntil - Date.now() + 1000 : 300);
+    });
+  }
+
+  function verdictFor(h, el) {
+    if (revealed.has(h) || settings.allow.indexOf(h) !== -1) return { action: 'allow' };
+    var ov = settings.overrides[h];
+    if (ov) return M.evaluate({ target: ov, raw: R.labelFor(ov), kind: 'override' }, settings);
+    if (recs.has(h)) return M.evaluate(recs.get(h), settings);
+
+    need(h);
+    lastEl.set(h, el);
+    var waitingForBudget = want.has(h) && Date.now() < limitedUntil;
+    if (settings.holdBlank && !waitingForBudget && Date.now() - firstSeen.get(h) < HOLD_MS) {
+      return { action: 'pending' };
+    }
+    return M.evaluate(null, settings);
+  }
+
+  /* ------------------------------------------------------------- context */
+
+  var RESERVED = /^(i|home|explore|notifications|messages|settings|compose|search|hashtag|intent|login|logout|signup|tos|privacy|jobs|lists|bookmarks|communities)$/;
 
   function pageContext() {
     var p = location.pathname;
-    if (/^\/messages/.test(p)) return { surface: null };
-    if (/^\/home\/?$/.test(p)) return { surface: 'timeline' };
-    if (/^\/notifications/.test(p)) return { surface: 'notifications' };
-    if (/^\/(search|explore)/.test(p)) return { surface: 'search' };
-    if (/^\/i\/(lists|bookmarks|communities|topics)/.test(p) || /\/lists\//.test(p)) return { surface: 'lists' };
-    if (/^\/i\/grok/.test(p)) return { surface: null };
+    if (/^\/(messages|settings|compose|i\/grok|i\/flow|login|logout)/.test(p)) return null;
     var st = /^\/([A-Za-z0-9_]{1,15})\/status\/(\d+)/.exec(p);
-    if (st) return { surface: 'replies', statusOwner: st[1].toLowerCase(), statusId: st[2] };
-    var prof = /^\/([A-Za-z0-9_]{1,15})(\/(with_replies|media|likes|highlights|superfollows|affiliates))?\/?$/.exec(p);
-    if (prof && !/^(i|home|explore|notifications|messages|settings|compose|search)$/.test(prof[1])) {
-      return { surface: 'profile', profile: prof[1].toLowerCase() };
-    }
-    return { surface: 'timeline' };
+    if (st) return { surface: 'replies', statusId: st[2] };
+    var prof = /^\/([A-Za-z0-9_]{1,15})(?:\/(?:with_replies|media|likes|highlights|articles|superfollows))?\/?$/.exec(p);
+    if (prof && !RESERVED.test(prof[1].toLowerCase())) return { surface: 'profile', profile: prof[1].toLowerCase() };
+    return { surface: 'feeds' };
   }
 
-  function surfaceEnabled(ctx) {
-    var s = settings.surfaces;
-    switch (ctx.surface) {
-      case 'timeline': return s.timeline;
-      case 'notifications': return s.notifications;
-      case 'search': return s.search;
-      case 'lists': return s.lists;
-      case 'replies': return s.replies;
-      case 'profile': return true; // per-entry check below
-      default: return false;
-    }
+  function active() {
+    return settings.enabled &&
+      (settings.blocked.length > 0 || settings.unknown !== 'allow' || settings.unclear !== 'allow');
   }
 
-  /* ------------------------------------------------------------ extraction */
+  /* ---------------------------------------------------------- extraction */
 
   function handleFromHref(href) {
-    if (!href) return null;
-    var m = /^\/([A-Za-z0-9_]{1,15})(?:[/?#]|$)/.exec(href);
-    if (!m) return null;
-    var h = m[1].toLowerCase();
-    if (/^(i|home|explore|notifications|messages|settings|compose|search|hashtag|intent)$/.test(h)) return null;
-    return h;
+    var m = /^\/([A-Za-z0-9_]{1,15})(?:[/?#]|$)/.exec(href || '');
+    if (!m || RESERVED.test(m[1].toLowerCase())) return null;
+    return m[1].toLowerCase();
   }
 
-  function handleFromUserName(el) {
-    if (!el) return null;
-    var links = el.querySelectorAll('a[href^="/"]');
+  function handleIn(userName) {
+    if (!userName) return null;
+    var links = userName.querySelectorAll('a[href^="/"]');
     for (var i = 0; i < links.length; i++) {
       var h = handleFromHref(links[i].getAttribute('href'));
       if (h) return h;
     }
-    var m = /@([A-Za-z0-9_]{1,15})/.exec(el.textContent || '');
+    var m = /@([A-Za-z0-9_]{1,15})/.exec(userName.textContent || '');
     return m ? m[1].toLowerCase() : null;
   }
 
-  function quoteContainer(article) {
+  function quoteOf(article) {
     var cands = article.querySelectorAll('div[role="link"]');
     for (var i = 0; i < cands.length; i++) {
       if (cands[i].querySelector('[data-testid="User-Name"]')) return cands[i];
@@ -176,34 +248,45 @@
     return null;
   }
 
-  function retweeterOf(article) {
+  function reposterOf(article) {
     var sc = article.querySelector('[data-testid="socialContext"]');
     if (!sc) return null;
     var a = sc.closest('a[href^="/"]') || sc.querySelector('a[href^="/"]');
-    if (!a) return null;
-    if (/\/status\//.test(a.getAttribute('href') || '')) return null;  // "Show this thread"
-    return handleFromHref(a.getAttribute('href'));
+    var href = a && a.getAttribute('href');
+    if (!href || href.indexOf('/status/') !== -1) return null;   // "Show this thread"
+    return handleFromHref(href);
   }
 
-  function describeArticle(article, ctx) {
-    var quote = quoteContainer(article);
+  function describe(article, ctx) {
+    var quote = quoteOf(article);
     var names = article.querySelectorAll('[data-testid="User-Name"]');
-    var main = null;
-    for (var i = 0; i < names.length; i++) {
-      if (quote && quote.contains(names[i])) continue;
-      main = handleFromUserName(names[i]);
-      if (main) break;
+    var author = null;
+    for (var i = 0; i < names.length && !author; i++) {
+      if (!quote || !quote.contains(names[i])) author = handleIn(names[i]);
     }
     return {
-      author: main,
-      quoted: quote ? handleFromUserName(quote.querySelector('[data-testid="User-Name"]')) : null,
-      quoteEl: quote,
-      retweeter: retweeterOf(article),
-      focused: ctx.surface === 'replies' && !article.querySelector('a[href*="/status/"] time')
+      author: author,
+      quote: quote,
+      quoted: quote ? handleIn(quote.querySelector('[data-testid="User-Name"]')) : null,
+      reposter: reposterOf(article),
+      focused: ctx.surface === 'replies' && isOpened(article, quote, ctx.statusId)
     };
   }
 
-  /* ------------------------------------------------------------- rendering */
+  // The post you opened is the one X makes unfocusable (tabindex -1), and its
+  // own timestamp links to the id in the URL. Links inside a quote don't count:
+  // a reply quoting the opened post would otherwise match.
+  function isOpened(article, quote, id) {
+    if (article.getAttribute('tabindex') === '-1') return true;
+    var links = article.querySelectorAll('a[href*="/status/' + id + '"]');
+    for (var i = 0; i < links.length; i++) {
+      if (quote && quote.contains(links[i])) continue;
+      if (links[i].querySelector('time') && new RegExp('/status/' + id + '$').test(links[i].getAttribute('href'))) return true;
+    }
+    return false;
+  }
+
+  /* ----------------------------------------------------------- rendering */
 
   function note(el, text, handle, why) {
     var n = el.querySelector(':scope > .tbr-note');
@@ -217,336 +300,200 @@
       btn.type = 'button';
       btn.textContent = 'Show';
       btn.addEventListener('click', function (e) {
-        e.preventDefault(); e.stopPropagation();
-        if (handle) revealed.add(handle);
-        el.removeAttribute('data-tbr');
-        el.removeAttribute('data-tbr-sig');
-        n.remove();
-        schedule(true);
+        e.preventDefault();
+        e.stopPropagation();
+        revealed.add(n.getAttribute('data-handle'));
+        schedule();
       }, true);
       n.appendChild(span);
       n.appendChild(btn);
       el.appendChild(n);
     }
-    n.querySelector('.tbr-note-text').textContent = text;
+    n.setAttribute('data-handle', handle);
+    n.firstChild.textContent = text;
     n.title = why || '';
-    return n;
   }
 
-  function clearNote(el) {
+  function dropNote(el) {
     var n = el.querySelector(':scope > .tbr-note');
     if (n) n.remove();
   }
 
-  function apply(el, state, handle, label, why) {
-    el.setAttribute('data-tbr', state);
-    if (handle) el.setAttribute('data-tbr-handle', handle);
+  function setAttr(el, name, value) {
+    if (value == null) { if (el.hasAttribute(name)) el.removeAttribute(name); }
+    else if (el.getAttribute(name) !== value) el.setAttribute(name, value);
+  }
+
+  // state: ok | pending | hidden | collapsed | flagged
+  function mark(el, state, handle, v) {
+    setAttr(el, 'data-tbr', state);
+    setAttr(el, 'data-tbr-handle', state === 'ok' || state === 'pending' ? null : handle);
     if (state === 'collapsed') {
-      note(el, 'Hidden — @' + handle + (settings.display.showReason && label ? ' · ' + label : ''), handle, why);
+      note(el, 'Hidden: @' + handle + (v.label ? ' · ' + v.label : ''), handle, v.why);
     } else if (state === 'flagged') {
-      note(el, 'Unclear location' + (label ? ' · ' + label : ''), handle, why);
+      note(el, 'Unclear location: @' + handle + (v.label ? ' · ' + v.label : ''), handle, v.why);
+      el.querySelector(':scope > .tbr-note').classList.add('tbr-note-flag');
     } else {
-      clearNote(el);
+      dropNote(el);
     }
+    if (state === 'hidden') counts.hidden++;
+    else if (state === 'collapsed') counts.hidden++;
+    else if (state === 'flagged') counts.flagged++;
+    else if (state === 'pending') counts.pending++;
   }
 
-  function hideEl(el, handle, verdict) {
-    var mode = settings.display.mode === 'placeholder' ? 'collapsed' : 'hidden';
-    apply(el, mode, handle, verdict.label, verdict.why);
+  function hide(el, handle, v) {
+    mark(el, settings.placeholder ? 'collapsed' : 'hidden', handle, v);
   }
 
-  /* -------------------------------------------------------------- the pass */
-
-  function verdictFor(handle) {
-    if (!handle) return null;
-    if (revealed.has(handle)) return { action: 'allow', why: 'revealed for this page' };
-    if (settings.allow.indexOf(handle) !== -1) return { action: 'allow', why: 'allowlisted' };
-    var rec = recFor(handle);
-    if (rec === undefined) { need(handle); return { action: 'pending' }; }
-    return M.evaluate(rec, settings);
+  // state: null | hidden | collapsed | flagged
+  function markQuote(q, state, handle, v) {
+    setAttr(q, 'data-tbr-quote', state);
+    setAttr(q, 'data-tbr-handle', state ? handle : null);
+    if (state === 'collapsed') note(q, 'Quoted tweet hidden: @' + handle + (v.label ? ' · ' + v.label : ''), handle, v.why);
+    else dropNote(q);
+    if (state === 'hidden' || state === 'collapsed') counts.hidden++;
+    else if (state === 'flagged') counts.flagged++;
   }
+
+  /* ------------------------------------------------------------ the pass */
 
   function processArticle(article, ctx) {
-    var container = article.closest('[data-testid="cellInnerDiv"]') || article;
-    var info = describeArticle(article, ctx);
+    var cell = article.closest('[data-testid="cellInnerDiv"]') || article;
+    var info = describe(article, ctx);
     if (!info.author) return;
+    var w = settings.where;
 
-    var sig = [info.author, info.quoted, info.retweeter, info.focused].join('|');
-    if (container.getAttribute('data-tbr-sig') === sig && container.getAttribute('data-tbr') !== 'pending') return;
-    container.setAttribute('data-tbr-sig', sig);
+    var surfaceOn = ctx.surface === 'replies' ? w.replies : w.feeds;
+    if (!surfaceOn || (info.focused && !w.openedTweet)) { mark(cell, 'ok'); clearQuote(info); return; }
 
-    var s = settings.surfaces;
-
-    if (info.focused && !s.focusedTweet) { apply(container, 'ok'); return; }
-    if (ctx.surface === 'profile' && ctx.profile === info.author && !s.profileTweets) {
-      apply(container, 'ok'); return;
-    }
-
-    var pending = false;
-    var checks = [];
-
-    var isRetweet = !!info.retweeter;
-    if (!isRetweet || s.retweets) checks.push({ handle: info.author, host: true });
-    if (isRetweet && s.retweeter) checks.push({ handle: info.retweeter, host: true });
-    if (info.quoted && s.quoted) checks.push({ handle: info.quoted, host: s.quotedHidesHost, quote: true });
-
-    var quoteVerdict = null;
-
-    for (var i = 0; i < checks.length; i++) {
-      var c = checks[i];
-      var v = verdictFor(c.handle);
-      if (!v) continue;
-      if (v.action === 'pending') { pending = true; continue; }
-      if (v.action === 'block') {
-        if (c.host) { hideEl(container, c.handle, v); return; }
-        quoteVerdict = { v: v, handle: c.handle };
-      } else if (v.action === 'flag' && c.host) {
-        apply(container, 'flagged', c.handle, v.label, v.why);
-        return;
-      } else if (v.action === 'flag' && c.quote) {
-        quoteVerdict = quoteVerdict || { v: v, handle: c.handle };
+    var hosts = [];
+    var ownProfile = ctx.surface === 'profile';
+    if (info.reposter) {
+      if (w.reposts) {
+        if (!(ownProfile && ctx.profile === info.reposter && !w.ownProfile)) hosts.push(info.reposter);
+        hosts.push(info.author);
       }
+    } else if (!(ownProfile && ctx.profile === info.author && !w.ownProfile)) {
+      hosts.push(info.author);
     }
 
-    if (info.quoteEl) {
-      if (quoteVerdict) {
-        var mode = quoteVerdict.v.action === 'flag' ? 'flagged'
-                 : settings.display.mode === 'placeholder' ? 'collapsed' : 'quote-hidden';
-        info.quoteEl.setAttribute('data-tbr-quote', mode);
-        info.quoteEl.setAttribute('data-tbr-handle', quoteVerdict.handle);
-        if (mode !== 'quote-hidden') {
-          note(info.quoteEl,
-               (mode === 'flagged' ? 'Quoted account: unclear location' : 'Quoted tweet hidden') +
-               ' — @' + quoteVerdict.handle +
-               (settings.display.showReason && quoteVerdict.v.label ? ' · ' + quoteVerdict.v.label : ''),
-               quoteVerdict.handle, quoteVerdict.v.why);
-        }
-      } else {
-        info.quoteEl.removeAttribute('data-tbr-quote');
-        clearNote(info.quoteEl);
-      }
+    var pending = false, flagged = null;
+    for (var i = 0; i < hosts.length; i++) {
+      var v = verdictFor(hosts[i], cell);
+      if (v.action === 'block') { hide(cell, hosts[i], v); clearQuote(info); return; }
+      if (v.action === 'pending') pending = true;
+      else if (v.action === 'flag' && !flagged) flagged = { h: hosts[i], v: v };
     }
 
-    apply(container, pending ? 'pending' : 'ok');
-    if (pending) armPendingTimeout(container);
+    if (info.quote) {
+      var qv = w.quotes && info.quoted ? verdictFor(info.quoted, cell) : null;
+      if (qv && qv.action === 'block') markQuote(info.quote, settings.placeholder ? 'collapsed' : 'hidden', info.quoted, qv);
+      else if (qv && qv.action === 'flag') markQuote(info.quote, 'flagged', info.quoted, qv);
+      else markQuote(info.quote, null);
+      if (qv && qv.action === 'pending') pending = true;
+    }
+
+    if (flagged) mark(cell, 'flagged', flagged.h, flagged.v);
+    else mark(cell, pending ? 'pending' : 'ok');
   }
 
-  function processUserCell(cell) {
-    var a = cell.querySelector('a[href^="/"]');
-    var handle = a ? handleFromHref(a.getAttribute('href')) : null;
-    if (!handle) return;
-    var container = cell.closest('[data-testid="cellInnerDiv"]') || cell;
-    if (container.getAttribute('data-tbr-sig') === handle &&
-        container.getAttribute('data-tbr') !== 'pending') return;
-    container.setAttribute('data-tbr-sig', handle);
-
-    var v = verdictFor(handle);
-    if (!v || v.action === 'pending') { apply(container, 'pending'); armPendingTimeout(container); return; }
-    if (v.action === 'block') hideEl(container, handle, v);
-    else if (v.action === 'flag') apply(container, 'flagged', handle, v.label, v.why);
-    else apply(container, 'ok');
+  function clearQuote(info) {
+    if (info.quote) markQuote(info.quote, null);
   }
 
-  var pendingTimers = new WeakMap();
-  function armPendingTimeout(el) {
-    if (pendingTimers.has(el)) return;
-    var t = setTimeout(function () {
-      pendingTimers.delete(el);
-      if (el.getAttribute('data-tbr') === 'pending') {
-        el.setAttribute('data-tbr', 'ok');
-        el.removeAttribute('data-tbr-sig');
-      }
-    }, Math.max(400, settings.display.pendingTimeoutMs));
-    pendingTimers.set(el, t);
+  function processUserCell(uc) {
+    var a = uc.querySelector('a[href^="/"]');
+    var h = a ? handleFromHref(a.getAttribute('href')) : null;
+    if (!h) return;
+    var cell = uc.closest('[data-testid="cellInnerDiv"]') || uc;
+    var v = verdictFor(h, cell);
+    if (v.action === 'block') hide(cell, h, v);
+    else if (v.action === 'flag') mark(cell, 'flagged', h, v);
+    else mark(cell, v.action === 'pending' ? 'pending' : 'ok');
   }
 
   function sweep() {
-    if (!settings.enabled) { resetMarks(); updateBadge(); return; }
+    counts = { hidden: 0, flagged: 0, pending: 0, unresolved: 0 };
     var ctx = pageContext();
-    if (!ctx.surface) { resetMarks(); updateBadge(); return; }
-
-    if (surfaceEnabled(ctx)) {
-      var arts = document.querySelectorAll('article[data-testid="tweet"], article[role="article"]');
-      for (var i = 0; i < arts.length; i++) {
-        try { processArticle(arts[i], ctx); } catch (e) { if (settings.debug) console.warn(e); }
-      }
-    }
-    if (settings.surfaces.userCells) {
+    if (!ctx || !active()) {
+      resetMarks();
+    } else {
+      var arts = document.querySelectorAll('article[data-testid="tweet"]');
+      for (var i = 0; i < arts.length; i++) processArticle(arts[i], ctx);
       var cells = document.querySelectorAll('[data-testid="UserCell"]');
       for (var j = 0; j < cells.length; j++) {
-        try { processUserCell(cells[j]); } catch (e) { if (settings.debug) console.warn(e); }
+        if (settings.where.people) processUserCell(cells[j]);
+        else mark(cells[j].closest('[data-testid="cellInnerDiv"]') || cells[j], 'ok');
       }
     }
-    scrapeAboutPanel();
-    updateBadge();
+    counts.unresolved = want.size + asking.size;
+    if (counts.hidden !== lastBadge) {
+      lastBadge = counts.hidden;
+      send({ type: 'badge', count: counts.hidden });
+    }
+    // Held entries need another look once their hold runs out.
+    if (counts.pending) setTimeout(schedule, 300);
   }
+  var lastBadge = -1;
 
   function resetMarks() {
-    document.querySelectorAll('[data-tbr],[data-tbr-sig],[data-tbr-quote]').forEach(function (el) {
+    document.querySelectorAll('[data-tbr],[data-tbr-quote]').forEach(function (el) {
       el.removeAttribute('data-tbr');
-      el.removeAttribute('data-tbr-sig');
       el.removeAttribute('data-tbr-quote');
+      el.removeAttribute('data-tbr-handle');
     });
     document.querySelectorAll('.tbr-note').forEach(function (n) { n.remove(); });
   }
 
-  function updateBadge() {
-    counts.hidden = document.querySelectorAll('[data-tbr="hidden"],[data-tbr="collapsed"]').length;
-    counts.flagged = document.querySelectorAll('[data-tbr="flagged"]').length;
-    counts.pending = document.querySelectorAll('[data-tbr="pending"]').length;
-    api.runtime.sendMessage({ type: 'badge', count: counts.hidden }).catch(function () { /* */ });
+  /* ------------------------------------------------------------- driving */
+
+  // Next animation frame, so changes land before paint. Firefox pauses
+  // animation frames in hidden tabs while X keeps loading there, hence the timer.
+  var queued = false, frame = 0, timer = 0;
+  function schedule() {
+    if (queued) return;
+    queued = true;
+    frame = requestAnimationFrame(run);
+    timer = setTimeout(run, 120);
+  }
+  function run() {
+    if (!queued) return;
+    queued = false;
+    cancelAnimationFrame(frame);
+    clearTimeout(timer);
+    sweep();
   }
 
-  /* ------------------------------------------- "About this account" scraper */
-
-  var aboutSeen = new WeakSet();
-
-  /* The panel is a list of label/value pairs, each in its own element:
-   *
-   *     Account based in
-   *     United States
-   *
-   * textContent flattens that to "...Account based inUnited StatesVerified..."
-   * with no separator, so a regex over it runs past the value and into the next
-   * row. Read the text nodes instead and take the one after the label. */
-  var ABOUT_LABEL = /^(?:account\s+)?based\s+in\s*[:\-]?$/i;
-  var ABOUT_INLINE = /\b(?:account\s+)?based\s+in\s*[:\-]?\s*(.{2,60})$/i;
-
-  /* Fallback only. "Connected via" reports the app-store country, which is a
-   * proxy for residence, not a disclosure of it: it survives travel, VPNs and
-   * store-region switches. background.rankOf() pins it to 35 so any real
-   * "Account based in" (85) or passive API sighting (60) displaces it. */
-  var VIA_LABEL = /^connected\s+via\s*[:\-]?$/i;
-  var VIA_INLINE = /\bconnected\s+via\s*[:\-]?\s*(.{2,60})$/i;
-  var STORE_SUFFIX = /^(.+?)\s+(?:app\s+store|play\s+store|google\s+play|store)$/i;
-
-  function textNodesIn(root) {
-    var out = [];
-    var w = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null);
-    var n;
-    while ((n = w.nextNode())) {
-      var t = (n.nodeValue || '').replace(/\s+/g, ' ').trim();
-      if (t) out.push(t);
-    }
-    return out;
-  }
-
-  /* "United States" is a country, "Southeast Asia" is not. Rank accordingly:
-   * background.rankOf() gives country 60 and region 50. */
-  function aboutKind(raw) {
-    var target = R.parseLocation(raw);
-    return target && /^[A-Z]{2}$/.test(target) ? 'country' : 'region';
-  }
-
-  /* Value for a label/value row: the label's own text node if the value is
-   * inline, else the next non-empty text node. Never spans into a later row. */
-  function rowValue(texts, i, labelRe, inlineRe) {
-    if (labelRe.test(texts[i])) {
-      for (var j = i + 1; j < texts.length; j++) {
-        if (texts[j].length >= 2) return texts[j];
-      }
-      return null;
-    }
-    var m = inlineRe.exec(texts[i]);
-    return m ? m[1].trim() : null;
-  }
-
-  function aboutLocationIn(root) {
-    var texts = textNodesIn(root);
-    var via = null;
-    for (var i = 0; i < texts.length; i++) {
-      var based = rowValue(texts, i, ABOUT_LABEL, ABOUT_INLINE);
-      if (based) return { raw: based, source: 'dom-about' };
-      if (!via) {
-        var v = rowValue(texts, i, VIA_LABEL, VIA_INLINE);
-        if (v) {
-          var m = STORE_SUFFIX.exec(v);
-          if (m) via = { raw: m[1].trim(), source: 'dom-appstore' };
-        }
-      }
-    }
-    return via;
-  }
-
-  function scrapeAboutPanel() {
-    if (!settings.sources.dom) return;
-    var panels = document.querySelectorAll('[role="dialog"], [data-testid="sheetDialog"], [aria-labelledby]');
-    for (var i = 0; i < panels.length; i++) {
-      var p = panels[i];
-      if (aboutSeen.has(p)) continue;
-      var txt = p.textContent || '';
-      var found = aboutLocationIn(p);
-      if (!found) continue;
-      if (found.source === 'dom-appstore' && !settings.sources.appStore) continue;
-      aboutSeen.add(p);
-
-      var handle = null;
-      var hm = /@([A-Za-z0-9_]{1,15})/.exec(txt);
-      if (hm) handle = hm[1].toLowerCase();
-      if (!handle) {
-        var ctx = pageContext();
-        if (ctx.surface === 'profile') handle = ctx.profile;
-      }
-      if (!handle) continue;
-
-      api.runtime.sendMessage({
-        type: 'put',
-        items: [{
-          handle: handle, raw: found.raw,
-          kind: aboutKind(found.raw), source: found.source
-        }]
-      }).catch(function () { /* */ });
-    }
-  }
-
-  /* ---------------------------------------------------------------- driving */
-
-  var frame = null;
-  function schedule(force) {
-    if (force) {
-      document.querySelectorAll('[data-tbr="pending"]').forEach(function (el) {
-        el.removeAttribute('data-tbr-sig');
-      });
-    }
-    if (frame) return;
-    frame = requestAnimationFrame(function () { frame = null; sweep(); });
-  }
-
-  var lastUrl = location.href;
+  var lastPath = location.pathname;
   function watchUrl() {
-    if (location.href === lastUrl) return;
-    lastUrl = location.href;
+    if (location.pathname === lastPath) return;
+    lastPath = location.pathname;
     revealed.clear();
-    resetMarks();
-    schedule(true);
+    schedule();
+  }
+
+  function applySettings(s) {
+    settings = s;
+    document.documentElement.setAttribute('data-tbr-hold', s.holdBlank ? '1' : '0');
   }
 
   function start() {
-    new MutationObserver(function () { schedule(); })
-      .observe(document.documentElement, { childList: true, subtree: true });
-    setInterval(watchUrl, 350);
-    setInterval(function () { schedule(); }, 1500);
-    setInterval(function () { toPage({ type: 'diag' }); }, 5000);
-    schedule(true);
+    new MutationObserver(schedule).observe(document.documentElement, { childList: true, subtree: true });
+    setInterval(watchUrl, 300);
+    window.addEventListener('scroll', function () { if (want.size) pump(); }, { passive: true });
+    schedule();
   }
 
   TBR.settings.get().then(function (s) {
-    settings = s;
-    document.documentElement.setAttribute('data-tbr-mode', s.display.blankWhilePending ? 'blank' : 'show');
-    toPage({ type: 'config', sources: s.sources, debug: s.debug });
-    if (document.readyState === 'loading') {
-      document.addEventListener('DOMContentLoaded', start);
-    } else {
-      start();
-    }
+    applySettings(s);
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start);
+    else start();
   });
 
   TBR.settings.onChange(function (s) {
-    settings = s;
-    document.documentElement.setAttribute('data-tbr-mode', s.display.blankWhilePending ? 'blank' : 'show');
-    toPage({ type: 'config', sources: s.sources, debug: s.debug });
-    recs.clear(); asked.clear();
-    resetMarks();
-    schedule(true);
+    applySettings(s);
+    recs.clear(); want.clear(); getQueue.clear();
+    schedule();
   });
 })();

@@ -4,31 +4,39 @@
   <meta charset="utf-8">
   <title>Regionfilter</title>
   <style>
-    :root { color-scheme: light dark; --muted:#79818b; --line:rgba(120,128,138,.3); }
-    body { width: 260px; margin: 0; padding: 14px;
+    :root { color-scheme: light dark; --muted: #79818b; --line: rgba(120,128,138,.3); --accent: #c2410c; }
+    @media (prefers-color-scheme: dark) { :root { --accent: #fb923c; } }
+    body { width: 270px; margin: 0; padding: 14px;
       font: 13px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
-    h1 { font-size: 14px; margin: 0 0 10px; }
-    .row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 0; }
+    h1 { font-size: 14px; margin: 0; }
+    header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+    .row { display: flex; justify-content: space-between; gap: 8px; padding: 3px 0; }
+    .row b { font-variant-numeric: tabular-nums; }
     .muted { color: var(--muted); }
-    button { border: 1px solid var(--line); background: transparent; color: inherit;
-      border-radius: 999px; padding: 4px 12px; font: inherit; cursor: pointer; width: 100%; }
-    button:hover { background: rgba(120,128,138,.14); }
-    .stack { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
+    .note { color: var(--muted); font-size: 12px; margin: 6px 0 0; }
     hr { border: 0; border-top: 1px solid var(--line); margin: 10px 0; }
+    .stack { display: flex; flex-direction: column; gap: 6px; margin-top: 12px; }
+    button { border: 1px solid var(--line); background: transparent; color: inherit;
+      border-radius: 999px; padding: 5px 12px; font: inherit; cursor: pointer; }
+    button:hover { background: rgba(120,128,138,.14); }
+    input[type="checkbox"] { accent-color: var(--accent); }
   </style>
 </head>
 <body>
-  <h1>Regionfilter</h1>
-  <label class="row"><span>Filtering on</span><input type="checkbox" id="enabled"></label>
+  <header>
+    <h1>Regionfilter</h1>
+    <label class="muted"><input type="checkbox" id="enabled"> On</label>
+  </header>
+  <div class="row"><span class="muted">Hidden on this page</span><b id="hidden">–</b></div>
+  <div class="row"><span class="muted">Marked unclear</span><b id="flagged">–</b></div>
+  <div class="row"><span class="muted">Waiting for a lookup</span><b id="unresolved">–</b></div>
   <hr>
-  <div class="row"><span class="muted">Unlisted here</span><span id="hidden">0</span></div>
-  <div class="row"><span class="muted">Marked unclear</span><span id="flagged">0</span></div>
-  <div class="row"><span class="muted">Still resolving</span><span id="pending">0</span></div>
-  <div class="row"><span class="muted">Places blocked</span><span id="blocked">0</span></div>
+  <div class="row"><span class="muted">Places hidden</span><b id="blocked">0</b></div>
+  <div class="row"><span class="muted">Lookups left</span><b id="budget">–</b></div>
+  <p class="note" id="note"></p>
   <div class="stack">
     <button id="reveal">Show everything on this page</button>
-    <button id="rescan">Re-check this page</button>
-    <button id="options">Settings…</button>
+    <button id="options">Settings</button>
   </div>
   <script src="../src/settings.js"></script>
   <script src="popup.js"></script>

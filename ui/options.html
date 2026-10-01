@@ -2,164 +2,144 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>Regionfilter for X — settings</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Regionfilter settings</title>
   <link rel="stylesheet" href="options.css">
 </head>
 <body>
-<header>
-  <h1>Regionfilter for X</h1>
-  <label class="switch">
-    <input type="checkbox" id="enabled">
-    <span>Filtering on</span>
-  </label>
-</header>
-
-<p class="lede">
-  Tweets whose author is based in a place you list below are <strong>unlisted</strong> —
-  removed from timelines, replies, search and quote embeds. Nothing is blocked:
-  the accounts, their profiles and every direct link still open normally.
-</p>
-
-<nav id="tabs">
-  <button data-tab="places" class="on">Places</button>
-  <button data-tab="where">Where it applies</button>
-  <button data-tab="unclear">Unclear locations</button>
-  <button data-tab="accounts">Per-account</button>
-  <button data-tab="advanced">Advanced</button>
-</nav>
-
-<section id="tab-places" class="tab on">
-  <div class="toolbar">
-    <input type="search" id="search" placeholder="Filter countries and regions…" autocomplete="off">
-    <span class="count"><span id="selCount">0</span> selected</span>
-    <button id="clearSel" class="ghost">Clear all</button>
-  </div>
-  <div id="chips" class="chips"></div>
-
-  <details open>
-    <summary>Groups X actually uses</summary>
-    <p class="hint">X sometimes reports a bloc rather than a country. Selecting one here
-      also covers every country inside it.</p>
-    <div id="groups" class="grid"></div>
-  </details>
-
-  <div id="tree"></div>
-
-  <details id="labelsBox">
-    <summary>Locations X reported that we couldn’t map</summary>
-    <p class="hint">Anything X has shown that doesn’t match a known country or region
-      shows up here once seen. Tick it to block that exact wording.</p>
-    <div id="labels" class="grid"></div>
-  </details>
-</section>
-
-<section id="tab-where" class="tab">
-  <h2>Surfaces</h2>
-  <div id="surfaces" class="rows"></div>
-
-  <h2>How hidden entries look</h2>
-  <div class="rows">
-    <label class="row"><span>Display</span>
-      <select id="displayMode">
-        <option value="hide">Remove entirely</option>
-        <option value="placeholder">Leave a one-line placeholder with a “Show” button</option>
-      </select>
-    </label>
-    <label class="row"><input type="checkbox" id="showReason"><span>Name the region on the placeholder</span></label>
-    <label class="row"><input type="checkbox" id="blankWhilePending"><span>Hold an entry blank while its author’s location is still being resolved (avoids a flash)</span></label>
-    <label class="row"><span>Give up resolving after</span>
-      <input type="number" id="pendingTimeoutMs" min="400" max="15000" step="100"> <span class="unit">ms</span>
-    </label>
-  </div>
-</section>
-
-<section id="tab-unclear" class="tab">
-  <h2>When X only gives a region</h2>
-  <p class="lede">
-    X does not always report a country. Often it reports only a subregion —
-    “Eastern Europe”, “the European Union”, “Southeast Asia” — with no country
-    name at all. If you blocked <em>Russia</em> and an account reports
-    <em>Eastern Europe</em>, that account may or may not be the thing you
-    blocked, and no amount of guessing changes that. So it is your call:
-  </p>
-  <div class="rows">
-    <label class="row"><span>Region overlaps your list, but isn’t contained by it</span>
-      <select id="polAmbiguous">
-        <option value="allow">Show it (default)</option>
-        <option value="block">Hide it</option>
-        <option value="flag">Show it, marked</option>
-      </select>
-    </label>
-    <label class="row"><span>X reported a place we can’t map at all</span>
-      <select id="polUnmapped">
-        <option value="allow">Show it (default)</option>
-        <option value="block">Hide it</option>
-        <option value="flag">Show it, marked</option>
-      </select>
-    </label>
-    <label class="row"><span>X discloses no location, or none found yet</span>
-      <select id="polUnknown">
-        <option value="allow">Show it (default)</option>
-        <option value="block">Hide it</option>
-        <option value="flag">Show it, marked</option>
-      </select>
-    </label>
-  </div>
-  <p class="hint">
-    A region that is <em>fully</em> inside your list is never ambiguous — blocking
-    every country in Eastern Europe hides accounts reported as “Eastern Europe” too.
-    Likewise blocking a whole region hides every country inside it.
-  </p>
-</section>
-
-<section id="tab-accounts" class="tab">
-  <h2>Never hide these accounts</h2>
-  <p class="hint">One handle per line, with or without the @.</p>
-  <textarea id="allow" rows="6" spellcheck="false"></textarea>
-
-  <h2>Fixed locations</h2>
-  <p class="hint">Overrides whatever X says, and never expires.
-    One per line: <code>@handle = Germany</code> or <code>@handle = Eastern Europe</code>.</p>
-  <textarea id="overrides" rows="8" spellcheck="false"></textarea>
-  <div id="overrideErrors" class="errors"></div>
-</section>
-
-<section id="tab-advanced" class="tab">
-  <h2>Where locations come from</h2>
-  <p class="hint">X only exposes an account’s location through its own API and the
-    “About this account” panel — never in the timeline markup. These are the ways
-    the extension can learn it.</p>
-  <div id="sources" class="rows"></div>
-
-  <h2>Cache</h2>
-  <div class="rows">
-    <label class="row"><span>Forget a location after</span>
-      <input type="number" id="cacheTtlHours" min="1" max="8760" step="1"> <span class="unit">hours</span>
-    </label>
-    <div class="row"><span id="cacheStats">…</span>
-      <button id="clearCache" class="ghost">Clear cache</button>
+<main>
+  <header>
+    <div>
+      <h1>Regionfilter for X</h1>
+      <p class="hint">Posts from accounts based in places you pick are taken out of your feeds.
+        Nothing is blocked: profiles and links still open.</p>
     </div>
-  </div>
+    <label class="switch big"><input type="checkbox" id="enabled"><span></span><b>On</b></label>
+  </header>
 
-  <h2>Diagnostics</h2>
-  <div class="rows">
-    <label class="row"><input type="checkbox" id="debug"><span>Log matching decisions to the page console</span></label>
-  </div>
-  <pre id="diag" class="diag">open x.com to collect diagnostics</pre>
+  <section>
+    <h2>Places to hide</h2>
+    <p class="hint">Tick a country, or a whole region to cover every country in it.</p>
+    <div class="toolbar">
+      <input type="search" id="search" placeholder="Search countries and regions" autocomplete="off">
+      <button id="clearSel" class="ghost" type="button">Clear all</button>
+    </div>
+    <div id="chips" class="chips"><span class="hint">Nothing selected yet.</span></div>
+    <details class="cont" open>
+      <summary>Groups</summary>
+      <div id="groups" class="grid"></div>
+    </details>
+    <div id="tree"></div>
+  </section>
 
-  <h2>Backup</h2>
-  <div class="row">
-    <button id="export" class="ghost">Export settings</button>
-    <button id="importBtn" class="ghost">Import settings</button>
-    <input type="file" id="importFile" accept="application/json" hidden>
-  </div>
-</section>
+  <section>
+    <h2>Where locations come from</h2>
+    <p class="hint">Both come from X’s “About this account” page. X allows about 50 lookups
+      every 15 minutes, so results are cached for 30 days and the filter gets more complete
+      the more you browse. Posts whose author hasn’t been looked up yet follow
+      “No location” below.</p>
+    <div class="rows">
+      <label class="row">
+        <span><b>Account based in</b>
+          <small>The country or region X shows for the account. The main signal.</small></span>
+        <span class="switch"><input type="checkbox" data-key="sources.basedIn"><span></span></span>
+      </label>
+      <label class="row">
+        <span><b>Connected via (App Store)</b>
+          <small>Only used when there’s no “based in”. It’s the country of the app store the
+            account uses, which stays the same through travel and VPNs, so treat it as a hint.</small></span>
+        <span class="switch"><input type="checkbox" data-key="sources.connectedVia"><span></span></span>
+      </label>
+    </div>
+    <p class="hint">Turn both off and no lookups are made; only your fixed locations below apply.</p>
+  </section>
 
-<footer><span id="saved"></span></footer>
+  <section>
+    <h2>Where to filter</h2>
+    <div class="rows" id="where"></div>
+  </section>
+
+  <section>
+    <h2>When it isn’t clear</h2>
+    <div class="rows">
+      <label class="row">
+        <span><b>Partly on your list</b>
+          <small>X sometimes gives only a region. If you hid Russia and X says “Eastern Europe”,
+            the account could be Russian or Polish. Also covers places this extension doesn’t recognise.</small></span>
+        <select data-key="unclear">
+          <option value="allow">Show</option>
+          <option value="flag">Show, marked</option>
+          <option value="block">Hide</option>
+        </select>
+      </label>
+      <label class="row">
+        <span><b>No location</b>
+          <small>X shows nothing for the account, or it hasn’t been looked up yet.</small></span>
+        <select data-key="unknown">
+          <option value="allow">Show</option>
+          <option value="flag">Show, marked</option>
+          <option value="block">Hide</option>
+        </select>
+      </label>
+    </div>
+  </section>
+
+  <section>
+    <h2>Looks</h2>
+    <div class="rows">
+      <label class="row">
+        <span><b>Leave a placeholder</b>
+          <small>Shows a one-line “Hidden: @name · Country” with a Show button instead of removing the post.</small></span>
+        <span class="switch"><input type="checkbox" data-key="placeholder"><span></span></span>
+      </label>
+      <label class="row">
+        <span><b>Hold posts blank while checking</b>
+          <small>Keeps a post blank for up to 2.5 seconds while its author is looked up, so it doesn’t flash past before hiding.</small></span>
+        <span class="switch"><input type="checkbox" data-key="holdBlank"><span></span></span>
+      </label>
+    </div>
+  </section>
+
+  <section>
+    <h2>Accounts</h2>
+    <div class="pair">
+      <label>
+        <b>Never hide</b>
+        <small class="hint">One handle per line.</small>
+        <textarea id="allow" rows="6" spellcheck="false" placeholder="@someone"></textarea>
+      </label>
+      <label>
+        <b>Fixed locations</b>
+        <small class="hint">Used instead of what X says. <code>@handle = Germany</code></small>
+        <textarea id="overrides" rows="6" spellcheck="false" placeholder="@someone = Germany"></textarea>
+        <small id="overrideErrors" class="error"></small>
+      </label>
+    </div>
+  </section>
+
+  <section>
+    <h2>Status</h2>
+    <div class="rows">
+      <div class="row"><span><b>Lookups left</b><small id="budgetNote">Open x.com to start.</small></span><span id="budget" class="stat">–</span></div>
+      <div class="row"><span><b>Accounts known</b><small id="cacheNote"></small></span>
+        <span class="stat-actions"><span id="cacheSize" class="stat">0</span><button id="clearCache" class="ghost" type="button">Clear</button></span></div>
+    </div>
+    <details id="seenBox">
+      <summary>Locations seen so far</summary>
+      <p class="hint">What X has reported, and how this extension reads it. Unrecognised wording can be hidden as is.</p>
+      <div id="seen" class="seen"></div>
+    </details>
+    <div class="toolbar end">
+      <button id="export" class="ghost" type="button">Export settings</button>
+      <button id="importBtn" class="ghost" type="button">Import settings</button>
+      <input type="file" id="importFile" accept="application/json" hidden>
+    </div>
+  </section>
+</main>
+<div id="saved" role="status"></div>
 
 <script src="../src/regions.js"></script>
 <script src="../src/settings.js"></script>
-<script src="../src/matcher.js"></script>
 <script src="options.js"></script>
 </body>
 </html>

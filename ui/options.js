@@ -8,76 +8,93 @@
 
   var $ = function (id) { return document.getElementById(id); };
 
-  function save(patch) {
-    S = TBR.settings.merge(S, patch);
-    if (patch.blocked) S.blocked = patch.blocked.slice();
-    if (patch.allow) S.allow = patch.allow.slice();
-    if (patch.overrides) S.overrides = patch.overrides;
+  var WHERE = [
+    ['feeds', 'Feeds', 'Home, lists, search, notifications and bookmarks.'],
+    ['replies', 'Replies', 'Replies under a post you opened.'],
+    ['quotes', 'Quoted posts', 'Hides just the quoted post inside someone else’s post.'],
+    ['reposts', 'Reposts', 'Reposts of a filtered author, and anything a filtered account reposts.'],
+    ['people', 'People lists', 'Who to follow, followers and following lists, people search.'],
+    ['ownProfile', 'Their own profile', 'Also filter an author’s posts on their own profile page. Off means you see what you went looking for.'],
+    ['openedTweet', 'The post you opened', 'Also filter the post itself when you open it by link.']
+  ];
+
+  /* ------------------------------------------------------------------ save */
+
+  function save() {
     clearTimeout(saveTimer);
     saveTimer = setTimeout(function () {
-      TBR.settings.replace(S).then(function () {
-        $('saved').textContent = 'saved';
-        setTimeout(function () { $('saved').textContent = ''; }, 1200);
+      TBR.settings.save(S).then(function (s) {
+        S = s;
+        var el = $('saved');
+        el.textContent = 'Saved';
+        el.classList.add('on');
+        setTimeout(function () { el.classList.remove('on'); }, 1000);
       });
-    }, 150);
+    }, 120);
   }
 
-  /* --------------------------------------------------------------- places */
+  function getKey(path) {
+    return path.split('.').reduce(function (o, k) { return o[k]; }, S);
+  }
 
-  function impliedBy(code) {
-    // which selected target already covers this country?
+  function setKey(path, value) {
+    var keys = path.split('.');
+    var o = S;
+    for (var i = 0; i < keys.length - 1; i++) o = o[keys[i]];
+    o[keys[keys.length - 1]] = value;
+    save();
+  }
+
+  /* ---------------------------------------------------------------- places */
+
+  // Which selected region already covers this country, if any.
+  function coveredBy(code) {
     for (var i = 0; i < S.blocked.length; i++) {
       var t = S.blocked[i];
-      if (t === code) continue;
-      if (R.codesFor(t).indexOf(code) !== -1) return t;
+      if (t !== code && R.codesFor(t).indexOf(code) !== -1) return t;
     }
     return null;
   }
 
   function toggle(target, on) {
-    var b = S.blocked.slice();
-    var i = b.indexOf(target);
-    if (on && i === -1) b.push(target);
-    if (!on && i !== -1) b.splice(i, 1);
-    save({ blocked: b });
+    var i = S.blocked.indexOf(target);
+    if (on && i === -1) S.blocked.push(target);
+    if (!on && i !== -1) S.blocked.splice(i, 1);
+    save();
     renderChips();
     repaint();
   }
 
-  /* Repaint in place. Rebuilding the tree on every tick would collapse whatever
-   * the user had open and throw away their scroll position. */
+  // Repaint checkboxes in place. Rebuilding would collapse every open section
+  // and lose the scroll position.
   function paint(l) {
-    var target = l.dataset.target;
-    var cb = l.querySelector("input");
-    var lock = l.querySelector(".lock");
-    var explicit = S.blocked.indexOf(target) !== -1;
-    var imp = explicit ? null : (target.length === 2 ? impliedBy(target) : null);
-    cb.checked = explicit || !!imp;
-    cb.disabled = !!imp;
-    l.classList.toggle("implied", !!imp);
-    l.title = imp ? "already covered by " + R.labelFor(imp) : "";
-    lock.textContent = imp ? "\u21b3 " + R.labelFor(imp) : "";
+    var t = l.dataset.target;
+    var cb = l.querySelector('input');
+    var on = S.blocked.indexOf(t) !== -1;
+    var by = !on && /^[A-Z]{2}$/.test(t) ? coveredBy(t) : null;
+    cb.checked = on || !!by;
+    cb.disabled = !!by;
+    l.classList.toggle('implied', !!by);
+    l.querySelector('.lock').textContent = by ? 'via ' + R.labelFor(by) : '';
   }
 
   function repaint() {
-    document.querySelectorAll("label[data-target]").forEach(paint);
+    document.querySelectorAll('label[data-target]').forEach(paint);
   }
 
-  function checkbox(target, label, extra) {
-    var l = document.createElement("label");
+  function checkbox(target, text, cls) {
+    var l = document.createElement('label');
     l.dataset.target = target;
-    var cb = document.createElement("input");
-    cb.type = "checkbox";
-    cb.addEventListener("change", function () { toggle(target, cb.checked); });
-    var span = document.createElement("span");
-    span.textContent = label;
-    var lock = document.createElement("span");
-    lock.className = "lock";
-    l.appendChild(cb);
-    l.appendChild(span);
-    l.appendChild(lock);
-    if (extra) l.appendChild(extra);
-    l.dataset.search = (label + " " + target).toLowerCase();
+    l.dataset.search = (text + ' ' + target).toLowerCase();
+    if (cls) l.className = cls;
+    var cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.addEventListener('change', function () { toggle(target, cb.checked); });
+    var span = document.createElement('span');
+    span.textContent = text;
+    var lock = document.createElement('span');
+    lock.className = 'lock';
+    l.append(cb, span, lock);
     paint(l);
     return l;
   }
@@ -85,199 +102,205 @@
   function renderChips() {
     var box = $('chips');
     box.textContent = '';
+    if (!S.blocked.length) {
+      var h = document.createElement('span');
+      h.className = 'hint';
+      h.textContent = 'Nothing selected yet.';
+      box.appendChild(h);
+      return;
+    }
     S.blocked.forEach(function (t) {
       var c = document.createElement('span');
       c.className = 'chip';
-      c.appendChild(document.createTextNode(R.labelFor(t)));
+      c.textContent = t.indexOf('label:') === 0 ? '“' + t.slice(6) + '”' : R.labelFor(t);
       var x = document.createElement('button');
       x.type = 'button';
       x.textContent = '✕';
-      x.title = 'remove';
+      x.title = 'Remove';
       x.addEventListener('click', function () { toggle(t, false); });
       c.appendChild(x);
       box.appendChild(c);
     });
-    $('selCount').textContent = String(S.blocked.length);
   }
 
-  function renderGroups() {
-    var box = $('groups');
-    box.textContent = '';
+  function renderPlaces() {
+    var groups = $('groups');
+    groups.textContent = '';
     Object.keys(R.GROUPS).forEach(function (k) {
-      box.appendChild(checkbox('grp:' + k, R.GROUPS[k][0]));
+      groups.appendChild(checkbox('grp:' + k, R.GROUPS[k][0]));
     });
-  }
 
-  function renderTree() {
-    var box = $('tree');
-    box.textContent = '';
-    var bySub = {};
+    var subsOf = {};
     Object.keys(R.SUBREGIONS).forEach(function (k) {
-      var cont = R.SUBREGIONS[k][1];
-      (bySub[cont] || (bySub[cont] = [])).push(k);
+      (subsOf[R.SUBREGIONS[k][1]] = subsOf[R.SUBREGIONS[k][1]] || []).push(k);
     });
 
+    var tree = $('tree');
+    tree.textContent = '';
     Object.keys(R.CONTINENTS).forEach(function (cont) {
       var d = document.createElement('details');
       d.className = 'cont';
       var sum = document.createElement('summary');
       sum.textContent = R.CONTINENTS[cont];
-      d.appendChild(sum);
-
       var head = document.createElement('div');
       head.className = 'grid';
-      head.appendChild(checkbox('cont:' + cont, 'All of ' + R.CONTINENTS[cont]));
-      d.appendChild(head);
+      head.appendChild(checkbox('cont:' + cont, 'All of ' + R.CONTINENTS[cont], 'all'));
+      d.append(sum, head);
 
-      (bySub[cont] || []).forEach(function (key) {
+      (subsOf[cont] || []).forEach(function (key) {
         var sd = document.createElement('details');
         sd.className = 'sub';
         var ss = document.createElement('summary');
         ss.textContent = R.SUBREGIONS[key][0];
-        sd.appendChild(ss);
-
         var g = document.createElement('div');
         g.className = 'grid';
-        g.appendChild(checkbox('sub:' + key, 'All of ' + R.SUBREGIONS[key][0]));
+        g.appendChild(checkbox('sub:' + key, 'All of ' + R.SUBREGIONS[key][0], 'all'));
         R.SUB_CODES[key].slice().sort(function (a, b) {
           return R.COUNTRY_NAME[a].localeCompare(R.COUNTRY_NAME[b]);
-        }).forEach(function (code) {
-          g.appendChild(checkbox(code, R.COUNTRY_NAME[code]));
-        });
-        sd.appendChild(g);
+        }).forEach(function (code) { g.appendChild(checkbox(code, R.COUNTRY_NAME[code])); });
+        sd.append(ss, g);
         d.appendChild(sd);
       });
-      box.appendChild(d);
+      tree.appendChild(d);
     });
-  }
-
-  function renderLabels(byTarget) {
-    var box = $('labels');
-    box.textContent = '';
-    var keys = Object.keys(byTarget || {}).filter(function (t) { return t.indexOf('label:') === 0; });
-    S.blocked.forEach(function (t) {
-      if (t.indexOf('label:') === 0 && keys.indexOf(t) === -1) keys.push(t);
-    });
-    if (!keys.length) {
-      box.innerHTML = '<p class="hint">Nothing yet.</p>';
-      return;
-    }
-    keys.sort().forEach(function (t) {
-      var n = byTarget[t];
-      var extra = document.createElement('span');
-      extra.className = 'seen';
-      extra.textContent = n ? '(' + n + ' seen)' : '';
-      box.appendChild(checkbox(t, '“' + t.slice(6) + '”', extra));
-    });
-  }
-
-  function renderPlaces() {
-    searchTookOver = false;
     renderChips();
-    renderGroups();
-    renderTree();
-    api.runtime.sendMessage({ type: 'cacheStats' }).then(function (r) {
-      renderLabels(r && r.byTarget);
-    }).catch(function () { renderLabels({}); });
-    applySearch();
   }
 
-  var searchTookOver = false;
-
+  var searching = false;
   function applySearch() {
-    var q = $("search").value.trim().toLowerCase();
-    var details = document.querySelectorAll("#tree details");
-
-    if (q && !searchTookOver) {
-      // remember what was expanded before the search started opening things
-      details.forEach(function (d) { d.dataset.prevOpen = d.open ? "1" : "0"; });
-      searchTookOver = true;
+    var q = $('search').value.trim().toLowerCase();
+    var details = document.querySelectorAll('#tree details');
+    if (q && !searching) {
+      details.forEach(function (d) { d.dataset.wasOpen = d.open ? '1' : ''; });
+      searching = true;
     }
-
-    document.querySelectorAll("#tree label, #groups label").forEach(function (l) {
-      l.style.display = (!q || (l.dataset.search || "").indexOf(q) !== -1) ? "" : "none";
+    document.querySelectorAll('#tree label, #groups label').forEach(function (l) {
+      l.hidden = !!q && l.dataset.search.indexOf(q) === -1;
     });
-
     details.forEach(function (d) {
-      var any = Array.prototype.some.call(d.querySelectorAll("label"), function (l) {
-        return l.style.display !== "none";
-      });
-      d.style.display = any ? "" : "none";
+      var any = Array.prototype.some.call(d.querySelectorAll('label'), function (l) { return !l.hidden; });
+      d.hidden = !any;
       if (q) d.open = any;
     });
-
-    if (!q && searchTookOver) {
-      details.forEach(function (d) { d.open = d.dataset.prevOpen === "1"; });
-      searchTookOver = false;
+    if (!q && searching) {
+      details.forEach(function (d) { d.open = d.dataset.wasOpen === '1'; });
+      searching = false;
     }
   }
 
-  /* -------------------------------------------------------------- surfaces */
+  /* --------------------------------------------------------------- toggles */
 
-  var SURFACES = [
-    ['timeline', 'Home timeline (For you / Following)'],
-    ['replies', 'Replies in a conversation'],
-    ['quoted', 'A blocked author quoted inside someone else’s tweet'],
-    ['quotedHidesHost', '…and hide the whole quoting tweet, not just the quote'],
-    ['retweets', 'Reposts of a blocked author'],
-    ['retweeter', 'Anything reposted by a blocked account'],
-    ['notifications', 'Notifications'],
-    ['search', 'Search and Explore'],
-    ['lists', 'Lists, bookmarks and communities'],
-    ['profileTweets', 'Tweets while you are on that author’s own profile'],
-    ['focusedTweet', 'The tweet you opened directly by link'],
-    ['userCells', 'Account suggestions and follower lists']
-  ];
-
-  var SOURCES = [
-    ['passive', 'Read locations out of X’s own API traffic as you browse (free, no extra requests)'],
-    ['active', 'Ask X’s API about authors we have not seen yet (needs X to have made the same kind of request once, so the shape can be replayed)'],
-    ['dom', 'Read the “About this account” panel whenever you open one'],
-    ['appStore', 'In that panel, fall back to “Connected via … App Store” when no country is disclosed (a proxy for where someone is — survives travel, VPNs and store-region switches — so it is outranked by every real sighting)'],
-    ['selfReported', 'Fall back to the account’s self-written profile location (unverified, easily faked)']
-  ];
-
-  function renderToggleList(boxId, defs, getter, setter) {
-    var box = $(boxId);
-    box.textContent = '';
-    defs.forEach(function (d) {
+  function renderWhere() {
+    var box = $('where');
+    WHERE.forEach(function (w) {
       var l = document.createElement('label');
       l.className = 'row';
+      var text = document.createElement('span');
+      var b = document.createElement('b');
+      b.textContent = w[1];
+      var sm = document.createElement('small');
+      sm.textContent = w[2];
+      text.append(b, sm);
+      var sw = document.createElement('span');
+      sw.className = 'switch';
       var cb = document.createElement('input');
       cb.type = 'checkbox';
-      cb.checked = !!getter(d[0]);
-      cb.addEventListener('change', function () { setter(d[0], cb.checked); });
-      var sp = document.createElement('span');
-      sp.textContent = d[1];
-      l.appendChild(cb);
-      l.appendChild(sp);
+      cb.dataset.key = 'where.' + w[0];
+      sw.append(cb, document.createElement('span'));
+      l.append(text, sw);
       box.appendChild(l);
+    });
+  }
+
+  function bindKeyed() {
+    document.querySelectorAll('[data-key]').forEach(function (el) {
+      el.addEventListener('change', function () {
+        setKey(el.dataset.key, el.type === 'checkbox' ? el.checked : el.value);
+      });
+    });
+  }
+
+  function fillKeyed() {
+    document.querySelectorAll('[data-key]').forEach(function (el) {
+      var v = getKey(el.dataset.key);
+      if (el.type === 'checkbox') el.checked = !!v; else el.value = v;
     });
   }
 
   /* -------------------------------------------------------------- accounts */
 
   function parseOverrides(text) {
-    var out = {}, errs = [];
+    var map = {}, errors = [];
     text.split('\n').forEach(function (line, i) {
       var t = line.trim();
       if (!t || t.charAt(0) === '#') return;
       var m = /^@?([A-Za-z0-9_]{1,15})\s*[=:]\s*(.+)$/.exec(t);
-      if (!m) { errs.push('line ' + (i + 1) + ': expected “@handle = place”'); return; }
+      if (!m) { errors.push('Line ' + (i + 1) + ': use “@handle = place”.'); return; }
       var target = R.parseLocation(m[2]);
-      if (!target || target === 'unavailable') {
-        errs.push('line ' + (i + 1) + ': “' + m[2].trim() + '” is not a place I know');
+      if (!target || target === 'unavailable' || target.indexOf('label:') === 0) {
+        errors.push('Line ' + (i + 1) + ': “' + m[2].trim() + '” isn’t a place this extension knows.');
         return;
       }
-      out[m[1].toLowerCase()] = target;
+      map[m[1].toLowerCase()] = target;
     });
-    return { map: out, errors: errs };
+    return { map: map, errors: errors };
   }
 
-  function overridesToText(map) {
-    return Object.keys(map).sort().map(function (h) {
-      return '@' + h + ' = ' + R.labelFor(map[h]);
-    }).join('\n');
+  function overridesText(map) {
+    return Object.keys(map).sort().map(function (h) { return '@' + h + ' = ' + R.labelFor(map[h]); }).join('\n');
+  }
+
+  /* ---------------------------------------------------------------- status */
+
+  function refreshStatus() {
+    api.runtime.sendMessage({ type: 'stats' }).then(function (r) {
+      if (!r) return;
+      var lim = r.limit;
+      if (lim) {
+        var mins = Math.max(0, Math.ceil((lim.reset - Date.now()) / 60000));
+        $('budget').textContent = lim.remaining + ' / ' + lim.limit;
+        $('budgetNote').textContent = 'Resets in ' + mins + ' min. A few are always left for your own visits to About pages.';
+      } else {
+        $('budget').textContent = '–';
+        $('budgetNote').textContent = 'Full budget available. X reports the count after the first lookup.';
+      }
+      var k = r.byKind || {};
+      $('cacheSize').textContent = String(r.size);
+      $('cacheNote').textContent = r.size
+        ? (k.basedIn || 0) + ' with a “based in”, ' + (k.storeOnly || 0) + ' with only an App Store, ' +
+          ((k.none || 0) + (k.missing || 0)) + ' with nothing.'
+        : 'Nothing cached yet.';
+      renderSeen(r.seen || {});
+    }).catch(function () {});
+  }
+
+  function renderSeen(seen) {
+    var box = $('seen');
+    var keys = Object.keys(seen).sort(function (a, b) { return seen[b] - seen[a]; });
+    var sig = keys.map(function (k) { return k + seen[k]; }).join('|') + S.blocked.join();
+    if (box.dataset.sig === sig) return;
+    box.dataset.sig = sig;
+    box.textContent = '';
+    if (!keys.length) {
+      box.innerHTML = '<span class="hint">Nothing yet.</span>';
+      return;
+    }
+    keys.forEach(function (raw) {
+      var t = R.parseLocation(raw);
+      var row = document.createElement('div');
+      var left = document.createElement('span');
+      left.textContent = raw + ' ×' + seen[raw];
+      var right;
+      if (t && t.indexOf('label:') === 0) {
+        right = checkbox(t, 'Hide this wording');
+      } else {
+        right = document.createElement('span');
+        right.className = 'as';
+        right.textContent = t === 'unavailable' ? 'no location' : 'read as ' + R.labelFor(t);
+      }
+      row.append(left, right);
+      box.appendChild(row);
+    });
   }
 
   /* ------------------------------------------------------------------ wire */
@@ -285,128 +308,49 @@
   function renderAll() {
     $('enabled').checked = S.enabled;
     renderPlaces();
-
-    renderToggleList('surfaces', SURFACES,
-      function (k) { return S.surfaces[k]; },
-      function (k, v) { var p = { surfaces: {} }; p.surfaces[k] = v; save(p); });
-
-    renderToggleList('sources', SOURCES,
-      function (k) { return S.sources[k]; },
-      function (k, v) { var p = { sources: {} }; p.sources[k] = v; save(p); });
-
-    $('displayMode').value = S.display.mode;
-    $('showReason').checked = S.display.showReason;
-    $('blankWhilePending').checked = S.display.blankWhilePending;
-    $('pendingTimeoutMs').value = S.display.pendingTimeoutMs;
-
-    $('polAmbiguous').value = S.policy.ambiguous;
-    $('polUnmapped').value = S.policy.unmapped;
-    $('polUnknown').value = S.policy.unknown;
-
+    applySearch();
+    fillKeyed();
     $('allow').value = S.allow.map(function (h) { return '@' + h; }).join('\n');
-    $('overrides').value = overridesToText(S.overrides);
-
-    $('cacheTtlHours').value = S.cacheTtlHours;
-    $('debug').checked = S.debug;
-    refreshCacheStats();
-    refreshDiag();
-  }
-
-  function refreshCacheStats() {
-    api.runtime.sendMessage({ type: 'cacheStats' }).then(function (r) {
-      $('cacheStats').textContent = (r ? r.size : 0) + ' account locations cached';
-    }).catch(function () { });
-  }
-
-  function refreshDiag() {
-    api.storage.local.get('diag').then(function (res) {
-      var d = res && res.diag;
-      if (!d) return;
-      $('diag').textContent =
-        'API responses scanned: ' + d.responsesScanned + '\n' +
-        'user objects seen:     ' + d.usersSeen + '\n' +
-        'locations found:       ' + d.locationsFound + '\n' +
-        'replayable requests:   ' + (d.templates || []).join(', ') + '\n' +
-        (d.lastError ? 'last error:            ' + d.lastError + '\n' : '') +
-        (d.fieldsSeen && Object.keys(d.fieldsSeen).length
-          ? '\nfields carrying a location:\n' +
-            Object.keys(d.fieldsSeen).map(function (k) {
-              return '  ' + k + '  ×' + d.fieldsSeen[k];
-            }).join('\n')
-          : '');
-    });
+    $('overrides').value = overridesText(S.overrides);
+    $('overrideErrors').textContent = '';
+    refreshStatus();
   }
 
   document.addEventListener('DOMContentLoaded', function () {
-    document.querySelectorAll('#tabs button').forEach(function (b) {
-      b.addEventListener('click', function () {
-        document.querySelectorAll('#tabs button').forEach(function (x) { x.classList.remove('on'); });
-        document.querySelectorAll('.tab').forEach(function (x) { x.classList.remove('on'); });
-        b.classList.add('on');
-        $('tab-' + b.dataset.tab).classList.add('on');
-      });
-    });
+    renderWhere();
+    bindKeyed();
 
-    $('enabled').addEventListener('change', function () { save({ enabled: $('enabled').checked }); });
+    $('enabled').addEventListener('change', function () { setKey('enabled', $('enabled').checked); });
     $('search').addEventListener('input', applySearch);
     $('clearSel').addEventListener('click', function () {
-      save({ blocked: [] });
+      S.blocked = [];
+      save();
       renderChips();
       repaint();
     });
 
-    ['displayMode', 'showReason', 'blankWhilePending', 'pendingTimeoutMs'].forEach(function (id) {
-      $(id).addEventListener('change', function () {
-        save({
-          display: {
-            mode: $('displayMode').value,
-            showReason: $('showReason').checked,
-            blankWhilePending: $('blankWhilePending').checked,
-            pendingTimeoutMs: Math.max(400, parseInt($('pendingTimeoutMs').value, 10) || 2500)
-          }
-        });
-      });
-    });
-
-    ['polAmbiguous', 'polUnmapped', 'polUnknown'].forEach(function (id) {
-      $(id).addEventListener('change', function () {
-        save({
-          policy: {
-            ambiguous: $('polAmbiguous').value,
-            unmapped: $('polUnmapped').value,
-            unknown: $('polUnknown').value
-          }
-        });
-      });
-    });
-
     $('allow').addEventListener('change', function () {
-      var list = $('allow').value.split('\n').map(function (l) {
-        var m = /@?([A-Za-z0-9_]{1,15})/.exec(l.trim());
+      S.allow = $('allow').value.split('\n').map(function (l) {
+        var m = /^@?([A-Za-z0-9_]{1,15})$/.exec(l.trim());
         return m ? m[1].toLowerCase() : null;
       }).filter(Boolean);
-      save({ allow: list });
+      save();
     });
 
     $('overrides').addEventListener('change', function () {
       var p = parseOverrides($('overrides').value);
-      $('overrideErrors').textContent = p.errors.join(' · ');
-      save({ overrides: p.map });
+      $('overrideErrors').textContent = p.errors.join(' ');
+      S.overrides = p.map;
+      save();
     });
-
-    $('cacheTtlHours').addEventListener('change', function () {
-      save({ cacheTtlHours: Math.max(1, parseInt($('cacheTtlHours').value, 10) || 336) });
-    });
-    $('debug').addEventListener('change', function () { save({ debug: $('debug').checked }); });
 
     $('clearCache').addEventListener('click', function () {
-      api.runtime.sendMessage({ type: 'clearCache' }).then(refreshCacheStats);
+      api.runtime.sendMessage({ type: 'clearCache' }).then(refreshStatus);
     });
 
     $('export').addEventListener('click', function () {
-      var blob = new Blob([JSON.stringify(S, null, 2)], { type: 'application/json' });
       var a = document.createElement('a');
-      a.href = URL.createObjectURL(blob);
+      a.href = URL.createObjectURL(new Blob([JSON.stringify(S, null, 2)], { type: 'application/json' }));
       a.download = 'regionfilter-settings.json';
       a.click();
       setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
@@ -415,13 +359,12 @@
     $('importFile').addEventListener('change', function () {
       var f = $('importFile').files[0];
       if (!f) return;
-      f.text().then(function (t) {
-        return TBR.settings.replace(JSON.parse(t));
-      }).then(function (s) { S = s; renderAll(); })
-        .catch(function (e) { $('overrideErrors').textContent = 'import failed: ' + e; });
+      f.text().then(function (t) { return TBR.settings.save(JSON.parse(t)); })
+        .then(function (s) { S = s; renderAll(); })
+        .catch(function (e) { $('overrideErrors').textContent = 'Import failed: ' + e.message; });
     });
 
     TBR.settings.get().then(function (s) { S = s; renderAll(); });
-    setInterval(refreshDiag, 3000);
+    setInterval(refreshStatus, 3000);
   });
 })();

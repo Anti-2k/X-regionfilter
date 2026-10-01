@@ -1,31 +1,25 @@
-/* Unlisted, not blocked: entries are removed from lists only. */
+/* Unlisted, not blocked: entries are taken out of lists only. */
 
-[data-tbr="hidden"] {
+[data-tbr="hidden"],
+[data-tbr-quote="hidden"] {
   display: none !important;
 }
 
-/* Brief blank while we are still resolving the author's location, so a tweet
-   that is about to be unlisted does not flash into view first. */
-html[data-tbr-mode="blank"] [data-tbr="pending"] {
+/* Held blank for a moment while the author is looked up, so a tweet that is
+   about to be unlisted doesn't flash into view first. */
+html[data-tbr-hold="1"] [data-tbr="pending"] {
   visibility: hidden !important;
 }
 
-[data-tbr="collapsed"] > *:not(.tbr-note) {
-  display: none !important;
-}
-
-[data-tbr-quote="quote-hidden"] {
-  display: none !important;
-}
-
+[data-tbr="collapsed"] > *:not(.tbr-note),
 [data-tbr-quote="collapsed"] > *:not(.tbr-note) {
   display: none !important;
 }
 
-[data-tbr="flagged"],
+[data-tbr="flagged"] > *:not(.tbr-note),
 [data-tbr-quote="flagged"] {
-  outline: 1px dashed rgba(247, 118, 142, 0.55);
-  outline-offset: -1px;
+  outline: 1px dashed rgba(234, 88, 12, 0.6);
+  outline-offset: -2px;
 }
 
 .tbr-note {
@@ -36,13 +30,17 @@ html[data-tbr-mode="blank"] [data-tbr="pending"] {
   font: 13px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
   color: rgb(113, 118, 123);
   border-bottom: 1px solid rgba(113, 118, 123, 0.25);
-  background: transparent;
+}
+
+.tbr-note-flag {
+  padding: 4px 16px;
+  border-bottom: 0;
+  font-size: 12px;
 }
 
 [data-tbr-quote] > .tbr-note {
   border: 1px solid rgba(113, 118, 123, 0.35);
   border-radius: 14px;
-  margin: 4px 0;
 }
 
 .tbr-note-text {
@@ -66,4 +64,8 @@ html[data-tbr-mode="blank"] [data-tbr="pending"] {
 
 .tbr-note-btn:hover {
   background: rgba(113, 118, 123, 0.15);
+}
+
+.tbr-note-flag .tbr-note-btn {
+  display: none;
 }
