@@ -84,6 +84,30 @@ var TBR = globalThis.TBR || (globalThis.TBR = {});
 
   function lookupsOn(s) { return s.sources.basedIn || s.sources.connectedVia; }
 
+  // Optional sync database (server/README.md). Its address and token live
+  // under storage.local "db", not in settings, so an exported settings file
+  // never carries the token. https only, except a server on this machine.
+  function syncBase(url) {
+    var u;
+    try { u = new URL(String(url || '').trim()); } catch (e) { return null; }
+    var local = u.hostname === 'localhost' || u.hostname === '127.0.0.1';
+    if (u.protocol !== 'https:' && !(u.protocol === 'http:' && local)) return null;
+    if (u.username || u.password || u.search || u.hash) return null;
+    return u.origin + u.pathname.replace(/\/+$/, '');
+  }
+
+  // Match patterns can't name a port, so this covers every port on the host.
+  function syncPattern(base) {
+    var u = new URL(base);
+    return u.protocol + '//' + u.hostname + '/*';
+  }
+
+  TBR.sync = {
+    DATA: ['websiteContent'],   // must match data_collection_permissions.optional
+    base: syncBase,
+    pattern: syncPattern
+  };
+
   TBR.api = api;
   TBR.settings = {
     DEFAULTS: DEFAULTS,

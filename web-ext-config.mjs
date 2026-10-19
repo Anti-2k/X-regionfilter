@@ -10,7 +10,8 @@ export default {
     '.env.example',
     '.gitignore',
     'LICENSE',
-    '*.zip'
+    '*.zip',
+    'server'
   ],
   run: {
     startUrl: ['https://x.com/home'],

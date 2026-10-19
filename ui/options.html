@@ -118,6 +118,33 @@
   </section>
 
   <section>
+    <h2>Sync database</h2>
+    <p class="hint">Optional. Shares looked-up locations with your other browsers, or friends,
+      through a server you run (see <code>server/README.md</code> in the repository). It’s asked
+      after this browser’s own cache and before spending one of X’s lookups, and everything this
+      browser looks up is added to it. Nothing is sent anywhere until you connect.</p>
+    <div class="pair">
+      <label>
+        <b>Server address</b>
+        <input type="url" id="dbUrl" spellcheck="false" autocomplete="off" placeholder="https://regionfilter-sync.you.workers.dev">
+      </label>
+      <label>
+        <b>Token</b>
+        <input type="password" id="dbToken" spellcheck="false" autocomplete="off" placeholder="rf_…">
+      </label>
+    </div>
+    <div class="toolbar end">
+      <small id="dbSay" class="grow"></small>
+      <button id="dbDisconnect" class="ghost" type="button" hidden>Disconnect</button>
+      <button id="dbConnect" class="ghost" type="button">Connect</button>
+    </div>
+    <div class="rows" id="dbRows" hidden>
+      <div class="row"><span><b>From the database</b><small>Accounts this browser didn’t have to look up itself.</small></span><span id="dbFrom" class="stat">0</span></div>
+      <div class="row"><span><b>Added to the database</b><small id="dbWaiting"></small></span><span id="dbUp" class="stat">0</span></div>
+    </div>
+  </section>
+
+  <section>
     <h2>Status</h2>
     <div class="rows">
       <div class="row"><span><b>Lookups left</b><small id="budgetNote">Open x.com to start.</small></span><span id="budget" class="stat">–</span></div>

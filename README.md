@@ -92,6 +92,22 @@ X allows **about 50 of those lookups every 15 minutes**. So:
 
 The first sessions on a fresh install are the patchiest. It fills in quickly.
 
+### Sharing the cache between browsers (optional)
+
+If you use X on several computers, each one normally spends its own lookups
+on the same accounts. Settings → *Sync database* connects them to one shared
+store instead: a small server you run yourself on Cloudflare's free plan
+(`server/README.md` has the steps). You can hand friends their own token.
+
+With it connected, an account is looked up in this order: this browser's
+cache, then the database, then X. Everything this browser learns from X is
+added to the database. Browsers can only read and add; clearing or editing
+the database is done by whoever runs it.
+
+Firefox asks for permission when you connect: access to that one server, and
+"share website content", which here means the handles and locations being
+sent to your server. Disconnect takes both back.
+
 ---
 
 ## Troubleshooting
@@ -110,10 +126,12 @@ A region that only partly overlaps your list catches everyone else there too.
 regularly. `AGENTS.md` lists every selector and API detail the extension relies
 on and how to repair them.
 
-**Is anything sent anywhere?** No. Settings and the cache live in your
-browser's extension storage. The only requests it makes are to X itself (the
-About lookups) and, if X renames that lookup, one fetch of X's own script
-from abs.twimg.com to find the new name.
+**Is anything sent anywhere?** Not unless you connect a sync database. Settings
+and the cache live in your browser's extension storage. The only requests it
+makes are to X itself (the About lookups) and, if X renames that lookup, one
+fetch of X's own script from abs.twimg.com to find the new name. A connected
+sync database additionally gets the handles it's asked about and the
+locations this browser looked up, and nothing else: no settings, no X login.
 
 ---
 
@@ -145,11 +163,12 @@ MIT, see `LICENSE`.
 ```
 manifest.json
 src/regions.js     country/region taxonomy and location parsing
-src/settings.js    settings schema and storage
+src/settings.js    settings schema and storage, sync-server address helpers
 src/matcher.js     the hide / show / mark decision
 src/page.js        runs X's About lookups in the page (page world)
 src/content.js     finds posts, decides, hides them
-src/background.js  shared cache and lookup budget
+src/background.js  shared cache, lookup budget, optional sync database
 src/styles.css     how hidden, held and marked posts look
 ui/                settings page and toolbar popup
+server/            optional sync database (Cloudflare Worker + D1), not shipped
 ```

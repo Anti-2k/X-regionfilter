@@ -250,6 +250,94 @@
     return Object.keys(map).sort().map(function (h) { return '@' + h + ' = ' + R.labelFor(map[h]); }).join('\n');
   }
 
+  /* ------------------------------------------------------------------ sync */
+
+  // Stored as storage.local "db" {url, token, name, canWrite}; the background
+  // picks changes up from there.
+  var dbConf = null;
+  var dbBusy = false;
+
+  function dbSay(text, bad) {
+    var el = $('dbSay');
+    el.textContent = text;
+    el.classList.toggle('error', !!bad);
+  }
+
+  function dbConnectedText() {
+    return dbConf ? 'Connected as ' + dbConf.name + (dbConf.canWrite ? '.' : ' (read only).') : '';
+  }
+
+  function renderDb() {
+    $('dbUrl').value = dbConf ? dbConf.url : '';
+    $('dbToken').value = '';
+    $('dbToken').placeholder = dbConf ? 'Saved. Paste a new one to replace it.' : 'rf_…';
+    $('dbDisconnect').hidden = !dbConf;
+    $('dbConnect').textContent = dbConf ? 'Reconnect' : 'Connect';
+    $('dbRows').hidden = !dbConf;
+    dbSay(dbConnectedText());
+  }
+
+  function fail(text) { throw new Error(text); }
+
+  function connectDb() {
+    var base = TBR.sync.base($('dbUrl').value);
+    var token = $('dbToken').value.trim() || (dbConf && dbConf.token) || '';
+    if (!base) { dbSay('Use an https:// address (plain http only for localhost).', true); return; }
+    if (!/^\S{16,200}$/.test(token)) { dbSay('Paste the token that scripts/token.js printed.', true); return; }
+    var pattern = TBR.sync.pattern(base);
+    dbBusy = true;
+    // Must happen straight from the click, or Firefox won't ask.
+    api.permissions.request({ origins: [pattern], data_collection: TBR.sync.DATA }).then(function (ok) {
+      if (!ok) fail('Firefox permission wasn’t granted, so nothing was connected.');
+      dbSay('Checking…');
+      return fetch(base + '/v1/ping', { headers: { authorization: 'Bearer ' + token }, credentials: 'omit', cache: 'no-store' })
+        .catch(function () { fail('Couldn’t reach the server.'); });
+    }).then(function (r) {
+      if (r.status === 401) fail('The server didn’t accept that token.');
+      if (!r.ok) fail('The server answered HTTP ' + r.status + '. Is the address right?');
+      return r.json().catch(function () { return null; });
+    }).then(function (j) {
+      if (!j || j.ok !== true) fail('That doesn’t look like a Regionfilter sync server.');
+      var old = dbConf && TBR.sync.base(dbConf.url);
+      var next = { url: base, token: token, name: String(j.name || 'unnamed'), canWrite: j.canWrite !== false };
+      return api.storage.local.set({ db: next }).then(function () {
+        if (old && TBR.sync.pattern(old) !== pattern) {
+          api.permissions.remove({ origins: [TBR.sync.pattern(old)] }).catch(function () {});
+        }
+        dbConf = next;
+        renderDb();
+      });
+    }).catch(function (e) {
+      dbSay(e.message, true);
+    }).then(function () {
+      dbBusy = false;
+    });
+  }
+
+  function disconnectDb() {
+    var base = dbConf && TBR.sync.base(dbConf.url);
+    api.storage.local.remove('db').then(function () {
+      if (base) {
+        api.permissions.remove({ origins: [TBR.sync.pattern(base)], data_collection: TBR.sync.DATA }).catch(function () {});
+      }
+      dbConf = null;
+      renderDb();
+    });
+  }
+
+  function renderDbStatus(d) {
+    if (!d || !dbConf) return;
+    $('dbFrom').textContent = String(d.fromDb);
+    $('dbUp').textContent = String(d.uploaded);
+    $('dbWaiting').textContent = d.readOnly ? 'This token is read only, so nothing is sent.'
+      : d.waiting ? d.waiting + ' waiting to be sent.'
+      : 'Everything this browser has looked up is in it.';
+    if (!dbBusy) {
+      if (d.error) dbSay(d.error, true);
+      else dbSay(dbConnectedText());
+    }
+  }
+
   /* ---------------------------------------------------------------- status */
 
   function refreshStatus() {
@@ -271,6 +359,7 @@
           ((k.none || 0) + (k.missing || 0)) + ' with nothing.'
         : 'Nothing cached yet.';
       renderSeen(r.seen || {});
+      renderDbStatus(r.db);
     }).catch(function () {});
   }
 
@@ -347,6 +436,10 @@
     $('clearCache').addEventListener('click', function () {
       api.runtime.sendMessage({ type: 'clearCache' }).then(refreshStatus);
     });
+
+    $('dbConnect').addEventListener('click', connectDb);
+    $('dbDisconnect').addEventListener('click', disconnectDb);
+    api.storage.local.get('db').then(function (r) { dbConf = r.db || null; renderDb(); });
 
     $('export').addEventListener('click', function () {
       var a = document.createElement('a');

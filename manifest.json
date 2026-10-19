@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Regionfilter for X",
   "short_name": "Regionfilter",
-  "version": "2.0.0",
+  "version": "3.0.0",
   "description": "Unlists tweets whose author is based in a country or region you don't want to see. Nothing is blocked — direct links still work.",
   "browser_specific_settings": {
     "gecko": {
@@ -11,6 +11,9 @@
       "data_collection_permissions": {
         "required": [
           "none"
+        ],
+        "optional": [
+          "websiteContent"
         ]
       }
     },
@@ -26,6 +29,11 @@
     "*://*.x.com/*",
     "*://twitter.com/*",
     "*://*.twitter.com/*"
+  ],
+  "optional_host_permissions": [
+    "https://*/*",
+    "http://localhost/*",
+    "http://127.0.0.1/*"
   ],
   "background": {
     "scripts": [

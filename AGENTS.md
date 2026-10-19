@@ -24,9 +24,12 @@ unlisted AMO releases.
 2. **No build step.** Every shipped file is hand-written and shipped as is,
    so the AMO "generated code" answer stays "no". No bundler, minifier,
    transpiler, framework.
-3. **No new permissions or hosts.** `permissions: ["storage"]`, hosts are
-   x.com/twitter.com. Network requests go to x.com and abs.twimg.com (X's own
-   bundle, for query-id recovery) only.
+3. **No new required permissions or hosts.** `permissions: ["storage"]`,
+   hosts are x.com/twitter.com, `data_collection_permissions.required` is
+   `none`. Network requests go to x.com and abs.twimg.com (X's own bundle,
+   for query-id recovery) only, plus the sync database when the user connects
+   one: that host and `websiteContent` are optional permissions granted from
+   the options page, never at install.
 4. **Ambiguity goes to the user.** A region that only partly overlaps the
    list follows `settings.unclear`; never add a heuristic that guesses.
 5. **ES5-style syntax in `src/`.** `var`, `function`, no optional chaining.
@@ -75,7 +78,8 @@ page world (MAIN)        content script (isolated)          background
 src/page.js     <-msg->  src/content.js          <-msg->    src/background.js
 AboutAccountQuery        finds entries, decides,            cache (storage.local
 requests + observes      hides; lookup queue,               "locations"), shared
-X's own ones             priority by viewport               rate budget, broadcast
+X's own ones             priority by viewport               rate budget, broadcast,
+                                                            optional sync database
 ```
 
 Shared files: `src/regions.js` (taxonomy + parsing), `src/settings.js`
@@ -90,7 +94,9 @@ time.
    `[data-testid="UserCell"]`; `describe()` pulls author, quoted author,
    reposter, and whether this is the opened post.
 2. `verdictFor(handle)`: allowlist → override → known record → otherwise
-   `need()`: batched `get` to background (40 ms).
+   `need()`: batched `get` to background (40 ms). With a sync database
+   connected, background asks it about the batch's misses (one request, up
+   to 1.5 s) before answering.
 3. Cache miss → handle goes into `want`. `pump()` asks background for a
    `lease` (at most 2 in flight per tab), on-screen handles first; handles
    scrolled out of the DOM are dropped from the queue.
@@ -118,12 +124,31 @@ Stored raw, keyed by lowercase handle, under `storage.local.locations`:
 record into what the matcher sees under the current source toggles, so
 flipping "Account based in" / "Connected via" takes effect without new
 lookups. TTLs: 30 days with a based-in, 7 days without, 1 day for missing
-accounts. `seen` counts raw based-in strings for the options page.
+accounts. Records from the sync database carry `src:'db'` and the server's
+`exp`, which replaces the local TTL; `up:1` marks a record the database
+already has. `seen` counts raw based-in strings for the options page.
+
+### Sync database (background.js)
+
+Off unless `storage.local.db` = `{url, token, name, canWrite}` is set, which
+only the options page's Connect does after `permissions.request` for the
+host and `websiteContent` and a `/v1/ping`. It lives outside `settings`
+so an exported settings file never carries the token.
+
+- `get`: local misses → one `/v1/lookup` → hits stored as above. Misses are
+  not asked again for 5 min; any error backs off for 1 min. Never blocks a
+  lookup on X for longer than the 1.5 s timeout.
+- Uploads: every `result` from X, plus on each background start every record
+  without `src`/`up` (backfill), in batches of 200. 403 → read-only, stop.
+- `dbSyncedTo` remembers which server the `up` marks refer to; connecting a
+  different one clears them so everything is offered again.
+- Clearing the cache is local only. Clients never delete from the database.
 
 ### Messages
 
 - content → background: `get`, `lease`, `result`, `queryId`, `badge`
-- options/popup → background: `stats`, `clearCache`
+- options/popup → background: `stats` (includes `db`), `clearCache`
+- options → background: none for the database; it watches `storage.local.db`
 - background → content: `updated`, `cleared`
 - popup → content: `pageStats`, `revealAll`
 - content ↔ page (`window.postMessage`, `tbr: 'content' | 'page'`):
@@ -170,6 +195,27 @@ The pass is idempotent: `sweep()` re-evaluates every visible entry and only
 writes attributes that changed, so it can run on every mutation. It runs on
 the next animation frame **or** a 120 ms timer, whichever is first, because
 Firefox pauses animation frames in hidden tabs.
+
+## Sync server (server/)
+
+Optional Cloudflare Worker + D1 that shares location records between
+installs; `server/README.md` has setup, the API and admin SQL. It is not part
+of the extension package (`web-ext-config.mjs` ignores it) and the no-build
+and ES5 rules don't apply to it.
+
+- Clients read (`/v1/lookup`) and add newer records (`/v1/records`). There
+  is no delete or edit endpoint; the owner manages data by hand.
+- The server decides how long a record is served (`settings` table) and
+  sends `exp`; the client doesn't judge a DB record's age.
+- Each batch is one SQL statement over `json_each(?)`: D1's free plan allows
+  50 queries per request.
+- **Never commit credentials**: `server/wrangler.toml` (has the database
+  id), tokens, `.dev.vars` are git-ignored. Only `wrangler.example.toml` is
+  tracked. The repo is meant to go public.
+
+Check it locally with a throwaway config outside the repo:
+`wrangler d1 execute regionfilter --local --persist-to <dir> --file schema.sql`
+then `wrangler dev --local --persist-to <dir>`.
 
 ## Checking changes
 

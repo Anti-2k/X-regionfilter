@@ -3,3 +3,8 @@ regionfilter.zip
 web-ext-artifacts/
 .env
 .amo-upload-uuid
+
+# sync server: personal config and local state
+server/wrangler.toml
+server/.wrangler/
+server/.dev.vars
