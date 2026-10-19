@@ -28,4 +28,6 @@ const sql = `INSERT INTO tokens (name, token_hash, can_write, created_at) ` +
             `VALUES ('${name}', '${hash}', ${readOnly ? 0 : 1}, ${Date.now()})`;
 
 console.log(`Token for "${name}"${readOnly ? ' (read only)' : ''}, shown once:\n\n  ${token}\n`);
-console.log(`Register it:\n\n  wrangler d1 execute ${db} --remote --command "${sql}"\n`);
+const cmd = `wrangler d1 execute ${db} --remote --command`;
+console.log(`Register it:\n\n  ${cmd} "${sql}"\n`);
+console.log(`or, with wrangler from nix:\n\n  nix-shell -p wrangler --run "${cmd} \\"${sql}\\""\n`);
